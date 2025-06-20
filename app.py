@@ -207,18 +207,25 @@ def create_price_chart(stock_data_dict):
 
 
 def create_performance_table(stock_data_dict):
-    """Create a performance metrics table."""
+    """Create a comprehensive performance metrics and stock information table."""
     if not stock_data_dict:
         return
     
-    st.subheader("📊 Performance Metrics")
+    st.subheader("📊 Performance Metrics & Stock Information")
     
     metrics_data = []
     for ticker, data in stock_data_dict.items():
+        # Get performance metrics
         metrics = st.session_state.data_fetcher.calculate_performance_metrics(data)
+        # Get stock information
+        stock_info = st.session_state.data_fetcher.get_stock_info(ticker)
+        
         if metrics:
             metrics_data.append({
                 'Ticker': ticker,
+                'Company': stock_info['name'],
+                'Sector': stock_info['sector'],
+                'P/E Ratio': stock_info['pe_ratio'] if stock_info['pe_ratio'] != 'N/A' else 'N/A',
                 'Total Return (%)': metrics['total_return'],
                 'Volatility (%)': metrics['volatility'],
                 'Sharpe Ratio': metrics['sharpe_ratio'],
@@ -342,22 +349,14 @@ def main():
     # Display data if available
     if st.session_state.stock_data:
         
-        # Create two columns for layout
-        col1, col2 = st.columns([2, 1])
+        # Main price chart (full width for better visibility)
+        create_price_chart(st.session_state.stock_data)
         
-        with col1:
-            # Main price chart
-            create_price_chart(st.session_state.stock_data)
-            
-            # Volume chart
-            create_volume_chart(st.session_state.stock_data)
-        
-        with col2:
-            # Stock information
-            display_stock_info(list(st.session_state.stock_data.keys()))
-        
-        # Performance metrics table (full width)
+        # Performance metrics table with stock information (full width between charts)
         create_performance_table(st.session_state.stock_data)
+        
+        # Volume chart (full width at bottom)
+        create_volume_chart(st.session_state.stock_data)
     
     else:
         # Welcome message
