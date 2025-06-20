@@ -178,7 +178,8 @@ class StockDatabase:
             
             # Execute query and return DataFrame
             df = pd.read_sql_query(query, conn, params=params)
-            df['date'] = pd.to_datetime(df['date'])
+            # Handle timezone-aware date parsing
+            df['date'] = pd.to_datetime(df['date'], format='mixed', utc=True).dt.tz_convert(None)
             return df
     
     def get_available_tickers(self):
@@ -224,4 +225,96 @@ class StockDatabase:
             ''', (ticker,))
             
             result = cursor.fetchone()
-            return result if result and result[0] else (None, None) 
+            return result if result and result[0] else (None, None)
+    
+    def check_data_freshness(self, ticker, start_date, end_date):
+        """
+        Check if we have fresh data for a ticker in the requested date range.
+        
+        Args:
+            ticker (str): Stock ticker symbol
+            start_date (str): Requested start date
+            end_date (str): Requested end date
+            
+        Returns:
+            dict: Information about data availability and freshness
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            
+            # Check what data we have
+            cursor.execute('''
+                SELECT MIN(date), MAX(date), COUNT(*) 
+                FROM stock_data 
+                WHERE ticker = ? AND date BETWEEN ? AND ?
+            ''', (ticker, start_date, end_date))
+            
+            result = cursor.fetchone()
+            
+            if not result or not result[0]:
+                return {
+                    'has_data': False,
+                    'needs_fetch': True,
+                    'fetch_reason': 'No data found in database'
+                }
+            
+            db_start, db_end, count = result
+            
+            # Check if we have recent data (within last 24 hours for current date)
+            from datetime import datetime, timedelta
+            today = datetime.now().date()
+            yesterday = today - timedelta(days=1)
+            
+            # If requesting current data, check if we have yesterday's data
+            if end_date >= str(today) and db_end >= str(yesterday):
+                return {
+                    'has_data': True,
+                    'needs_fetch': False,
+                    'fetch_reason': 'Recent data available',
+                    'data_range': (db_start, db_end),
+                    'record_count': count
+                }
+            
+            # Check if we have complete coverage for requested range
+            expected_days = self._calculate_trading_days(start_date, end_date)
+            coverage_ratio = count / max(expected_days, 1)
+            
+            if coverage_ratio >= 0.8:  # 80% coverage is acceptable
+                return {
+                    'has_data': True,
+                    'needs_fetch': False,
+                    'fetch_reason': f'Good coverage ({coverage_ratio:.1%})',
+                    'data_range': (db_start, db_end),
+                    'record_count': count
+                }
+            else:
+                return {
+                    'has_data': True,
+                    'needs_fetch': True,
+                    'fetch_reason': f'Incomplete data ({coverage_ratio:.1%} coverage)',
+                    'data_range': (db_start, db_end),
+                    'record_count': count
+                }
+    
+    def _calculate_trading_days(self, start_date, end_date):
+        """
+        Rough calculation of trading days (excluding weekends).
+        
+        Args:
+            start_date (str): Start date
+            end_date (str): End date
+            
+        Returns:
+            int: Approximate number of trading days
+        """
+        from datetime import datetime
+        
+        try:
+            start = datetime.strptime(start_date, '%Y-%m-%d')
+            end = datetime.strptime(end_date, '%Y-%m-%d')
+            total_days = (end - start).days + 1
+            
+            # Rough estimate: 5/7 of days are trading days
+            return int(total_days * 5 / 7)
+        except:
+            return 250  # Default to about 1 year of trading days 

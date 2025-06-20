@@ -322,41 +322,106 @@ def main():
             # Create progress tracking
             progress_callback, progress_bar, status_text = create_progress_callback()
             
-            # Fetch stock data
-            result = st.session_state.data_fetcher.fetch_multiple_stocks(
-                tickers, 
-                start_date.strftime('%Y-%m-%d'), 
-                end_date.strftime('%Y-%m-%d'),
-                progress_callback
-            )
+            # Smart data fetching - check cache first
+            start_date_str = start_date.strftime('%Y-%m-%d')
+            end_date_str = end_date.strftime('%Y-%m-%d')
+            
+            tickers_to_fetch = []
+            cached_data = {}
+            cache_info = []
+            
+            # Check each ticker's data freshness
+            for ticker in tickers:
+                freshness = st.session_state.db.check_data_freshness(ticker, start_date_str, end_date_str)
+                
+                if freshness['needs_fetch']:
+                    tickers_to_fetch.append(ticker)
+                    cache_info.append(f"{ticker}: {freshness['fetch_reason']}")
+                else:
+                    # Get cached data
+                    cached_data[ticker] = st.session_state.db.get_stock_data([ticker], start_date_str, end_date_str)
+                    cache_info.append(f"{ticker}: Using cached data ({freshness['fetch_reason']})")
+            
+            # Store cache analysis for display at bottom
+            if cache_info:
+                st.session_state.cache_analysis = "Data source analysis:\n" + "\n".join(cache_info)
+                st.session_state.show_cache_analysis = True
+            
+            # Only fetch what we need
+            if tickers_to_fetch:
+                st.session_state.fetch_status = f"Fetching fresh data for: {', '.join(tickers_to_fetch)}"
+                if cached_data:
+                    st.session_state.fetch_status += f" (Using cached data for: {', '.join(cached_data.keys())})"
+                st.session_state.show_fetch_status = True
+                
+                # Fetch only the tickers we need
+                result = st.session_state.data_fetcher.fetch_multiple_stocks(
+                    tickers_to_fetch, 
+                    start_date_str, 
+                    end_date_str,
+                    progress_callback
+                )
+            else:
+                # All data is cached!
+                st.session_state.fetch_status = f"Using cached data for all tickers: {', '.join(tickers)}"
+                st.session_state.show_fetch_status = True
+                result = ({}, [], [])
             
             # Unpack the result
-            stock_data, successful_tickers, failed_tickers = result
+            fetched_stock_data, successful_tickers, failed_tickers = result
             
             # Clear progress indicators
             progress_bar.empty()
             status_text.empty()
             
+            # Combine cached and fetched data
+            combined_stock_data = {}
+            
+            # Add cached data (convert database format to yfinance format)
+            for ticker, db_data in cached_data.items():
+                if not db_data.empty:
+                    # Filter data for this specific ticker (since db_data might contain multiple tickers)
+                    ticker_data = db_data[db_data['ticker'] == ticker].copy()
+                    
+                    if not ticker_data.empty:
+                        # Convert database format back to DataFrame with proper index
+                        df = ticker_data.copy()
+                        # Ensure date column is properly formatted (handle timezone-aware dates)
+                        df['date'] = pd.to_datetime(df['date'], format='mixed', utc=True).dt.tz_convert(None)
+                        df = df.set_index('date')
+                        
+                        # Select only the price/volume columns and rename to match yfinance format
+                        df = df[['open', 'high', 'low', 'close', 'adj_close', 'volume']]
+                        df.columns = ['Open', 'High', 'Low', 'Close', 'Adj Close', 'Volume']
+                        
+                        # Ensure index name matches yfinance format
+                        df.index.name = 'Date'
+                        combined_stock_data[ticker] = df
+            
+            # Add fetched data
+            combined_stock_data.update(fetched_stock_data)
+            
             # Store fetch result messages for display at bottom
             if successful_tickers:
-                st.session_state.fetch_success_status = f"Successfully fetched data for: {', '.join(successful_tickers)}"
+                st.session_state.fetch_success_status = f"Successfully fetched fresh data for: {', '.join(successful_tickers)}"
                 st.session_state.show_fetch_success_status = True
             
             if failed_tickers:
                 st.session_state.fetch_failed_status = f"Failed to fetch data for: {', '.join(failed_tickers)}"
                 st.session_state.show_fetch_failed_status = True
             
-            if stock_data:
-                # Store data in database
-                with st.spinner("Saving data to database..."):
-                    for ticker, data in stock_data.items():
-                        try:
-                            st.session_state.db.insert_stock_data(ticker, data)
-                        except Exception as e:
-                            st.error(f"Error saving {ticker} to database: {str(e)}")
+            if combined_stock_data:
+                # Store only newly fetched data in database (cached data is already there)
+                if fetched_stock_data:
+                    with st.spinner("Saving new data to database..."):
+                        for ticker, data in fetched_stock_data.items():
+                            try:
+                                st.session_state.db.insert_stock_data(ticker, data)
+                            except Exception as e:
+                                st.error(f"Error saving {ticker} to database: {str(e)}")
                 
-                # Store in session state for immediate display
-                st.session_state.stock_data = stock_data
+                # Store combined data in session state for immediate display
+                st.session_state.stock_data = combined_stock_data
                 
                 # Store success status for display at bottom
                 st.session_state.success_status = "Data fetched and saved successfully!"
@@ -390,6 +455,11 @@ def main():
         if hasattr(st.session_state, 'show_success_status') and st.session_state.show_success_status:
             st.success(st.session_state.success_status)
             st.session_state.show_success_status = False
+        
+        if hasattr(st.session_state, 'show_cache_analysis') and st.session_state.show_cache_analysis:
+            with st.expander("📊 Data Source Analysis (Click to expand)"):
+                st.text(st.session_state.cache_analysis)
+            st.session_state.show_cache_analysis = False
     
     else:
         # Welcome message
