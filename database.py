@@ -106,8 +106,24 @@ class StockDatabase:
                 else:
                     final_data[db_col] = None
             
-            # Insert data, replacing duplicates
-            final_data.to_sql('stock_data', conn, if_exists='append', index=False)
+            # Insert data, replacing duplicates using INSERT OR REPLACE
+            cursor = conn.cursor()
+            for _, row in final_data.iterrows():
+                cursor.execute('''
+                    INSERT OR REPLACE INTO stock_data 
+                    (ticker, date, open, high, low, close, adj_close, volume)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                ''', (
+                    row['ticker'], 
+                    row['date'], 
+                    row.get('open'), 
+                    row.get('high'), 
+                    row.get('low'), 
+                    row.get('close'), 
+                    row.get('adj_close'), 
+                    row.get('volume')
+                ))
+            conn.commit()
     
     def get_stock_data(self, tickers, start_date=None, end_date=None):
         """
