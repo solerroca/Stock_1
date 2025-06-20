@@ -109,19 +109,37 @@ class StockDatabase:
             # Insert data, replacing duplicates using INSERT OR REPLACE
             cursor = conn.cursor()
             for _, row in final_data.iterrows():
+                # Convert pandas/numpy types to Python native types and handle NaN values
+                def clean_value(value):
+                    if pd.isna(value):
+                        return None
+                    # Convert numpy types to Python native types
+                    if hasattr(value, 'item'):
+                        return value.item()
+                    return value
+                
+                # Convert date to string format
+                date_str = row['date']
+                if hasattr(date_str, 'strftime'):
+                    date_str = date_str.strftime('%Y-%m-%d')
+                elif hasattr(date_str, 'date'):
+                    date_str = str(date_str.date())
+                else:
+                    date_str = str(date_str)
+                
                 cursor.execute('''
                     INSERT OR REPLACE INTO stock_data 
                     (ticker, date, open, high, low, close, adj_close, volume)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
-                    row['ticker'], 
-                    row['date'], 
-                    row.get('open'), 
-                    row.get('high'), 
-                    row.get('low'), 
-                    row.get('close'), 
-                    row.get('adj_close'), 
-                    row.get('volume')
+                    str(row['ticker']), 
+                    date_str, 
+                    clean_value(row.get('open')), 
+                    clean_value(row.get('high')), 
+                    clean_value(row.get('low')), 
+                    clean_value(row.get('close')), 
+                    clean_value(row.get('adj_close')), 
+                    clean_value(row.get('volume'))
                 ))
             conn.commit()
     
