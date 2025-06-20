@@ -29,6 +29,8 @@ def initialize_session_state():
         st.session_state.db = StockDatabase()
     if 'data_fetcher' not in st.session_state:
         st.session_state.data_fetcher = StockDataFetcher()
+    if 'ticker_input' not in st.session_state:
+        st.session_state.ticker_input = ""
 
 
 def create_sidebar():
@@ -42,14 +44,19 @@ def create_sidebar():
     # Text area for multiple tickers
     tickers_input = st.sidebar.text_area(
         "Stock Symbols (comma-separated):",
+        value=st.session_state.ticker_input,
         placeholder="AAPL, GOOGL, MSFT, AMZN, TSLA",
-        height=100
+        height=100,
+        key="ticker_text_area"
     )
     
     # Popular tickers suggestions
     popular_tickers = st.session_state.data_fetcher.get_popular_tickers()
     st.sidebar.markdown("**Popular Stocks:**")
     st.sidebar.markdown(", ".join(popular_tickers[:10]))
+    
+    # Update session state with current input
+    st.session_state.ticker_input = tickers_input
     
     # Parse tickers
     tickers = []
@@ -381,7 +388,19 @@ def main():
         for i, ticker in enumerate(popular_tickers[:10]):
             with cols[i % 5]:
                 if st.button(f"📊 {ticker}", key=f"popular_{ticker}"):
-                    st.info(f"Copy '{ticker}' to the sidebar input!")
+                    # Add ticker to the input field
+                    current_input = st.session_state.ticker_input.strip()
+                    if current_input:
+                        # Add to existing tickers if not already present
+                        existing_tickers = [t.strip().upper() for t in current_input.split(',') if t.strip()]
+                        if ticker not in existing_tickers:
+                            st.session_state.ticker_input = current_input + f", {ticker}"
+                        else:
+                            st.info(f"{ticker} is already in your list!")
+                    else:
+                        # Set as first ticker
+                        st.session_state.ticker_input = ticker
+                    st.rerun()
 
 
 if __name__ == "__main__":
