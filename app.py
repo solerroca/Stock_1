@@ -228,7 +228,7 @@ def create_performance_table(stock_data_dict):
                 return color
             return ''
         
-        styled_df = metrics_df.style.applymap(
+        styled_df = metrics_df.style.map(
             color_performance, 
             subset=['Total Return (%)', 'Max Drawdown (%)']
         )
