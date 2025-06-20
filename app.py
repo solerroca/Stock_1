@@ -167,12 +167,12 @@ def create_price_chart(stock_data_dict):
     if not stock_data_dict:
         return
     
-    st.subheader("📊 Stock Price Comparison")
+    st.subheader("📊 Stock Performance Comparison")
     
-    # Create normalized data for comparison
-    normalized_data = st.session_state.data_fetcher.normalize_prices(stock_data_dict)
+    # Create percentage change data for comparison
+    percentage_data = st.session_state.data_fetcher.normalize_prices(stock_data_dict)
     
-    if normalized_data.empty:
+    if percentage_data.empty:
         st.warning("No data available for charting")
         return
     
@@ -181,20 +181,23 @@ def create_price_chart(stock_data_dict):
     
     colors = px.colors.qualitative.Set1
     
-    for i, ticker in enumerate(normalized_data.columns):
+    for i, ticker in enumerate(percentage_data.columns):
         fig.add_trace(go.Scatter(
-            x=normalized_data.index,
-            y=normalized_data[ticker],
+            x=percentage_data.index,
+            y=percentage_data[ticker],
             mode='lines',
             name=ticker,
             line=dict(color=colors[i % len(colors)], width=2),
-            hovertemplate=f'<b>{ticker}</b><br>Date: %{{x}}<br>Normalized Price: %{{y:.2f}}<extra></extra>'
+            hovertemplate=f'<b>{ticker}</b><br>Date: %{{x}}<br>Change: %{{y:.1f}}%<extra></extra>'
         ))
     
+    # Add a horizontal line at 0% for reference
+    fig.add_hline(y=0, line_dash="dash", line_color="gray", opacity=0.5)
+    
     fig.update_layout(
-        title="Stock Performance Comparison (Normalized to 100)",
+        title="Stock Performance Comparison (% Change from Start)",
         xaxis_title="Date",
-        yaxis_title="Normalized Price",
+        yaxis_title="Percentage Change (%)",
         hovermode='x unified',
         template="plotly_white",
         height=500

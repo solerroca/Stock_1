@@ -220,24 +220,24 @@ class StockDataFetcher:
     
     def normalize_prices(self, stock_data_dict, base_value=100):
         """
-        Normalize stock prices to a base value for comparison.
+        Calculate percentage change from starting price for comparison.
         
         Args:
             stock_data_dict (dict): Dictionary with ticker as key and DataFrame as value
-            base_value (int): Base value for normalization (default: 100)
+            base_value (int): Not used for percentage calculation (kept for compatibility)
             
         Returns:
-            pd.DataFrame: DataFrame with normalized prices
+            pd.DataFrame: DataFrame with percentage changes
         """
-        normalized_data = pd.DataFrame()
+        percentage_data = pd.DataFrame()
         
         for ticker, data in stock_data_dict.items():
             if not data.empty:
-                # Normalize to base value
-                normalized_prices = (data['Close'] / data['Close'].iloc[0]) * base_value
-                normalized_data[ticker] = normalized_prices
+                # Calculate percentage change from first price
+                percentage_change = ((data['Close'] / data['Close'].iloc[0]) - 1) * 100
+                percentage_data[ticker] = percentage_change
         
-        return normalized_data
+        return percentage_data
     
     @staticmethod
     def get_popular_tickers():
