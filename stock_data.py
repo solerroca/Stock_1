@@ -129,14 +129,8 @@ class StockDataFetcher:
             else:
                 failed_tickers.append(ticker)
         
-        # Show summary
-        if successful_tickers:
-            st.success(f"Successfully fetched data for: {', '.join(successful_tickers)}")
-        
-        if failed_tickers:
-            st.warning(f"Failed to fetch data for: {', '.join(failed_tickers)}")
-        
-        return stock_data
+        # Return stock data with status information (don't display messages here)
+        return stock_data, successful_tickers, failed_tickers
     
     def get_stock_info(self, ticker):
         """

@@ -315,22 +315,36 @@ def main():
         if len(tickers) > 10:
             st.error("Please enter no more than 10 stock tickers.")
         else:
-            st.info(f"Fetching data for: {', '.join(tickers)}")
+            # Store status messages for display at bottom
+            st.session_state.fetch_status = f"Fetching data for: {', '.join(tickers)}"
+            st.session_state.show_fetch_status = True
             
             # Create progress tracking
             progress_callback, progress_bar, status_text = create_progress_callback()
             
             # Fetch stock data
-            stock_data = st.session_state.data_fetcher.fetch_multiple_stocks(
+            result = st.session_state.data_fetcher.fetch_multiple_stocks(
                 tickers, 
                 start_date.strftime('%Y-%m-%d'), 
                 end_date.strftime('%Y-%m-%d'),
                 progress_callback
             )
             
+            # Unpack the result
+            stock_data, successful_tickers, failed_tickers = result
+            
             # Clear progress indicators
             progress_bar.empty()
             status_text.empty()
+            
+            # Store fetch result messages for display at bottom
+            if successful_tickers:
+                st.session_state.fetch_success_status = f"Successfully fetched data for: {', '.join(successful_tickers)}"
+                st.session_state.show_fetch_success_status = True
+            
+            if failed_tickers:
+                st.session_state.fetch_failed_status = f"Failed to fetch data for: {', '.join(failed_tickers)}"
+                st.session_state.show_fetch_failed_status = True
             
             if stock_data:
                 # Store data in database
@@ -344,7 +358,9 @@ def main():
                 # Store in session state for immediate display
                 st.session_state.stock_data = stock_data
                 
-                st.success("Data fetched and saved successfully!")
+                # Store success status for display at bottom
+                st.session_state.success_status = "Data fetched and saved successfully!"
+                st.session_state.show_success_status = True
     
     # Display data if available
     if st.session_state.stock_data:
@@ -357,6 +373,23 @@ def main():
         
         # Volume chart (full width at bottom)
         create_volume_chart(st.session_state.stock_data)
+        
+        # Display status messages at the bottom
+        if hasattr(st.session_state, 'show_fetch_status') and st.session_state.show_fetch_status:
+            st.info(st.session_state.fetch_status)
+            st.session_state.show_fetch_status = False
+        
+        if hasattr(st.session_state, 'show_fetch_success_status') and st.session_state.show_fetch_success_status:
+            st.success(st.session_state.fetch_success_status)
+            st.session_state.show_fetch_success_status = False
+        
+        if hasattr(st.session_state, 'show_fetch_failed_status') and st.session_state.show_fetch_failed_status:
+            st.warning(st.session_state.fetch_failed_status)
+            st.session_state.show_fetch_failed_status = False
+        
+        if hasattr(st.session_state, 'show_success_status') and st.session_state.show_success_status:
+            st.success(st.session_state.success_status)
+            st.session_state.show_success_status = False
     
     else:
         # Welcome message
