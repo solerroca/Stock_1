@@ -35,12 +35,17 @@ class StockDatabase:
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
             
+            # Check if frequency column exists, if not add it
+            cursor.execute("PRAGMA table_info(stock_data)")
+            columns = [column[1] for column in cursor.fetchall()]
+            
             # Create table for stock data
             cursor.execute('''
                 CREATE TABLE IF NOT EXISTS stock_data (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     ticker TEXT NOT NULL,
                     date DATE NOT NULL,
+                    frequency TEXT NOT NULL DEFAULT 'daily',
                     open REAL,
                     high REAL,
                     low REAL,
@@ -48,25 +53,30 @@ class StockDatabase:
                     adj_close REAL,
                     volume INTEGER,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    UNIQUE(ticker, date)
+                    UNIQUE(ticker, date, frequency)
                 )
             ''')
             
+            # Add frequency column if it doesn't exist (for existing databases)
+            if 'frequency' not in columns:
+                cursor.execute('ALTER TABLE stock_data ADD COLUMN frequency TEXT DEFAULT "daily"')
+            
             # Create index for faster queries
             cursor.execute('''
-                CREATE INDEX IF NOT EXISTS idx_ticker_date 
-                ON stock_data(ticker, date)
+                CREATE INDEX IF NOT EXISTS idx_ticker_date_freq 
+                ON stock_data(ticker, date, frequency)
             ''')
             
             conn.commit()
     
-    def insert_stock_data(self, ticker, data_df):
+    def insert_stock_data(self, ticker, data_df, frequency='daily'):
         """
         Insert stock data into the database.
         
         Args:
             ticker (str): Stock ticker symbol
             data_df (pd.DataFrame): DataFrame with stock data
+            frequency (str): Data frequency ('daily' or 'weekly')
         """
         with sqlite3.connect(self.db_path) as conn:
             # Prepare data for insertion  
@@ -98,6 +108,7 @@ class StockDatabase:
             final_data = pd.DataFrame()
             final_data['ticker'] = data_df_copy['ticker']
             final_data['date'] = data_df_copy['date']
+            final_data['frequency'] = frequency
             
             # Add price and volume columns if they exist
             for db_col, df_col in column_mapping.items():
@@ -129,11 +140,12 @@ class StockDatabase:
                 
                 cursor.execute('''
                     INSERT OR REPLACE INTO stock_data 
-                    (ticker, date, open, high, low, close, adj_close, volume)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    (ticker, date, frequency, open, high, low, close, adj_close, volume)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
                     str(row['ticker']), 
                     date_str, 
+                    str(row['frequency']),
                     clean_value(row.get('open')), 
                     clean_value(row.get('high')), 
                     clean_value(row.get('low')), 
@@ -143,7 +155,7 @@ class StockDatabase:
                 ))
             conn.commit()
     
-    def get_stock_data(self, tickers, start_date=None, end_date=None):
+    def get_stock_data(self, tickers, start_date=None, end_date=None, frequency='daily'):
         """
         Retrieve stock data from the database.
         
@@ -151,6 +163,7 @@ class StockDatabase:
             tickers (list): List of stock ticker symbols
             start_date (str, optional): Start date for data retrieval
             end_date (str, optional): End date for data retrieval
+            frequency (str): Data frequency ('daily' or 'weekly')
             
         Returns:
             pd.DataFrame: DataFrame with stock data
@@ -161,10 +174,10 @@ class StockDatabase:
             query = f'''
                 SELECT ticker, date, open, high, low, close, adj_close, volume
                 FROM stock_data
-                WHERE ticker IN ({placeholders})
+                WHERE ticker IN ({placeholders}) AND frequency = ?
             '''
             
-            params = list(tickers)
+            params = list(tickers) + [frequency]
             
             if start_date:
                 query += ' AND date >= ?'
@@ -178,8 +191,26 @@ class StockDatabase:
             
             # Execute query and return DataFrame
             df = pd.read_sql_query(query, conn, params=params)
-            # Handle timezone-aware date parsing
-            df['date'] = pd.to_datetime(df['date'], format='mixed', utc=True).dt.tz_convert(None)
+            # Handle timezone-aware date parsing - ensure consistent timezone-naive format
+            if not df.empty:
+                try:
+                    # Parse dates and handle mixed formats with UTC to avoid warnings
+                    df['date'] = pd.to_datetime(df['date'], utc=True).dt.tz_convert(None)
+                except Exception:
+                    try:
+                        # Fallback: parse with UTC=True to handle mixed timezones
+                        df['date'] = pd.to_datetime(df['date'], utc=True).dt.tz_localize(None)
+                    except Exception:
+                        try:
+                            # Fallback: parse without timezone
+                            df['date'] = pd.to_datetime(df['date'])
+                            # Remove timezone if present
+                            if hasattr(df['date'].dt, 'tz') and df['date'].dt.tz is not None:
+                                df['date'] = df['date'].dt.tz_localize(None)
+                        except Exception:
+                            # Final fallback: coerce errors to NaT and drop
+                            df['date'] = pd.to_datetime(df['date'], errors='coerce', utc=True).dt.tz_localize(None)
+                            df = df.dropna(subset=['date'])
             return df
     
     def get_available_tickers(self):
@@ -194,24 +225,29 @@ class StockDatabase:
             cursor.execute('SELECT DISTINCT ticker FROM stock_data ORDER BY ticker')
             return [row[0] for row in cursor.fetchall()]
     
-    def delete_stock_data(self, ticker):
+    def delete_stock_data(self, ticker, frequency=None):
         """
-        Delete all data for a specific ticker.
+        Delete data for a specific ticker and optionally specific frequency.
         
         Args:
             ticker (str): Stock ticker symbol to delete
+            frequency (str, optional): Data frequency ('daily' or 'weekly'). If None, deletes all frequencies.
         """
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
-            cursor.execute('DELETE FROM stock_data WHERE ticker = ?', (ticker,))
+            if frequency:
+                cursor.execute('DELETE FROM stock_data WHERE ticker = ? AND frequency = ?', (ticker, frequency))
+            else:
+                cursor.execute('DELETE FROM stock_data WHERE ticker = ?', (ticker,))
             conn.commit()
     
-    def get_data_date_range(self, ticker):
+    def get_data_date_range(self, ticker, frequency='daily'):
         """
         Get the date range of available data for a ticker.
         
         Args:
             ticker (str): Stock ticker symbol
+            frequency (str): Data frequency ('daily' or 'weekly')
             
         Returns:
             tuple: (start_date, end_date) or (None, None) if no data
@@ -221,13 +257,13 @@ class StockDatabase:
             cursor.execute('''
                 SELECT MIN(date), MAX(date) 
                 FROM stock_data 
-                WHERE ticker = ?
-            ''', (ticker,))
+                WHERE ticker = ? AND frequency = ?
+            ''', (ticker, frequency))
             
             result = cursor.fetchone()
             return result if result and result[0] else (None, None)
     
-    def check_data_freshness(self, ticker, start_date, end_date):
+    def check_data_freshness(self, ticker, start_date, end_date, frequency='daily'):
         """
         Check if we have fresh data for a ticker in the requested date range.
         
@@ -235,6 +271,7 @@ class StockDatabase:
             ticker (str): Stock ticker symbol
             start_date (str): Requested start date
             end_date (str): Requested end date
+            frequency (str): Data frequency ('daily' or 'weekly')
             
         Returns:
             dict: Information about data availability and freshness
@@ -246,8 +283,8 @@ class StockDatabase:
             cursor.execute('''
                 SELECT MIN(date), MAX(date), COUNT(*) 
                 FROM stock_data 
-                WHERE ticker = ? AND date BETWEEN ? AND ?
-            ''', (ticker, start_date, end_date))
+                WHERE ticker = ? AND frequency = ? AND date BETWEEN ? AND ?
+            ''', (ticker, frequency, start_date, end_date))
             
             result = cursor.fetchone()
             

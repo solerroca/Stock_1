@@ -40,7 +40,7 @@ class StockDataFetcher:
         except Exception:
             return False
     
-    def fetch_stock_data(self, ticker, start_date, end_date):
+    def fetch_stock_data(self, ticker, start_date, end_date, interval='1d'):
         """
         Fetch historical stock data for a single ticker.
         
@@ -48,6 +48,7 @@ class StockDataFetcher:
             ticker (str): Stock ticker symbol
             start_date (str): Start date in YYYY-MM-DD format
             end_date (str): End date in YYYY-MM-DD format
+            interval (str): Data interval ('1d' for daily, '1wk' for weekly)
             
         Returns:
             pd.DataFrame: DataFrame with stock data, or None if error
@@ -62,25 +63,60 @@ class StockDataFetcher:
                 
                 # Fetch data with period as fallback if dates don't work
                 try:
-                    data = stock.history(start=start_date, end=end_date, auto_adjust=True, prepost=True)
-                except:
-                    # Fallback to period-based fetching
-                    data = stock.history(period="1y", auto_adjust=True)
+                    data = stock.history(
+                        start=start_date, 
+                        end=end_date, 
+                        interval=interval,
+                        auto_adjust=True, 
+                        prepost=True
+                    )
+                except Exception as e:
+                    # Fallback to period-based fetching with better period selection
+                    
+                    # Calculate days difference to choose appropriate period
+                    from datetime import datetime
+                    start_dt = datetime.strptime(start_date, '%Y-%m-%d')
+                    end_dt = datetime.strptime(end_date, '%Y-%m-%d')
+                    days_diff = (end_dt - start_dt).days
+                    
+                    # Choose period based on requested timeframe
+                    if days_diff <= 60:
+                        period = "3mo"
+                    elif days_diff <= 365:
+                        period = "1y"
+                    elif days_diff <= 730:
+                        period = "2y"
+                    elif days_diff <= 1825:
+                        period = "5y"
+                    else:
+                        period = "max"
+                    
+                    try:
+                        data = stock.history(
+                            period=period, 
+                            interval=interval,
+                            auto_adjust=True
+                        )
+                    except Exception as e2:
+                        data = pd.DataFrame()  # Empty dataframe
                 
                 if data.empty:
                     if attempt < max_retries - 1:
                         time.sleep(retry_delay)
                         continue
                     else:
-                        st.warning(f"No data available for ticker: {ticker}")
+                        pass
                         return None
                 
                 # Clean the data
                 data = data.dropna()
                 
                 if len(data) < 10:  # Need at least 10 data points
-                    st.warning(f"Insufficient data for ticker: {ticker}")
+                    pass
                     return None
+                
+                # Normalize timezone to avoid comparison issues
+                data.index = self._normalize_timezone(data.index)
                 
                 return data
                 
@@ -90,12 +126,12 @@ class StockDataFetcher:
                     retry_delay *= 2  # Exponential backoff
                     continue
                 else:
-                    st.error(f"Error fetching data for {ticker}: {str(e)}")
+                    pass
                     return None
         
         return None
     
-    def fetch_multiple_stocks(self, tickers, start_date, end_date, progress_callback=None):
+    def fetch_multiple_stocks(self, tickers, start_date, end_date, interval='1d', progress_callback=None):
         """
         Fetch historical stock data for multiple tickers.
         
@@ -103,6 +139,7 @@ class StockDataFetcher:
             tickers (list): List of stock ticker symbols
             start_date (str): Start date in YYYY-MM-DD format
             end_date (str): End date in YYYY-MM-DD format
+            interval (str): Data interval ('1d' for daily, '1wk' for weekly)
             progress_callback (function): Optional callback for progress updates
             
         Returns:
@@ -121,7 +158,7 @@ class StockDataFetcher:
             # Add a small delay to be respectful to the API
             time.sleep(0.1)
             
-            data = self.fetch_stock_data(ticker, start_date, end_date)
+            data = self.fetch_stock_data(ticker, start_date, end_date, interval)
             
             if data is not None:
                 stock_data[ticker] = data
@@ -131,6 +168,119 @@ class StockDataFetcher:
         
         # Return stock data with status information (don't display messages here)
         return stock_data, successful_tickers, failed_tickers
+    
+    def fetch_stocks_with_timeframe(self, tickers, timeframe_config, db, progress_callback=None):
+        """
+        Fetch stock data with hybrid storage strategy.
+        - Daily data stored for ≤1Y periods
+        - Weekly data stored for 2Y+ periods
+        
+        Args:
+            tickers (list): List of stock ticker symbols
+            timeframe_config (dict): Timeframe configuration with 'days' and 'label'
+            db (StockDatabase): Database instance for caching
+            progress_callback (function): Optional callback for progress updates
+            
+        Returns:
+            tuple: (stock_data_dict, cache_info, successful_tickers, failed_tickers)
+        """
+        from datetime import datetime, timedelta, date
+        
+        # Calculate date range
+        end_date = date.today()
+        start_date = end_date - timedelta(days=timeframe_config['days'])
+        
+        # Determine storage strategy based on timeframe
+        is_long_term = timeframe_config['days'] >= 730  # 2Y and above use weekly
+        frequency = 'weekly' if is_long_term else 'daily'
+        api_interval = '1wk' if is_long_term else '1d'
+        
+        stock_data = {}
+        cache_info = {}
+        successful_tickers = []
+        failed_tickers = []
+        
+        for i, ticker in enumerate(tickers):
+            ticker = ticker.upper().strip()
+            
+            if progress_callback:
+                progress_callback(i, len(tickers), f"Processing {ticker}...")
+            
+            # Check database first for the appropriate frequency
+            cached_data = db.get_stock_data(
+                [ticker], 
+                start_date.strftime('%Y-%m-%d'), 
+                end_date.strftime('%Y-%m-%d'),
+                frequency=frequency
+            )
+            
+            if not cached_data.empty:
+                # Convert cached data to the format expected by the app
+                ticker_data = cached_data[cached_data['ticker'] == ticker].copy()
+                if not ticker_data.empty:
+                    try:
+                        # Set date as index and select price columns
+                        ticker_data = ticker_data.set_index('date')
+                        ticker_data = ticker_data[['open', 'high', 'low', 'close', 'adj_close', 'volume']]
+                        ticker_data.columns = ['Open', 'High', 'Low', 'Close', 'Adj Close', 'Volume']
+                        
+                        # Ensure timezone-naive DatetimeIndex for consistency
+                        if not ticker_data.empty:
+                            ticker_data.index = self._normalize_timezone(ticker_data.index)
+                            # Ensure it's a DatetimeIndex after normalization
+                            if not isinstance(ticker_data.index, pd.DatetimeIndex):
+                                ticker_data.index = pd.DatetimeIndex(ticker_data.index)
+                        
+                        if not ticker_data.empty:
+                            stock_data[ticker] = ticker_data
+                            successful_tickers.append(ticker)
+                            cache_info[ticker] = "cached"
+                            continue
+                    except Exception as e:
+                        # Continue to API fetch if cached data processing fails
+                        pass
+            
+            # Fetch from API if not in cache or insufficient data
+            if progress_callback:
+                progress_callback(i, len(tickers), f"Fetching {ticker} from API...")
+            
+            time.sleep(0.1)  # Be respectful to API
+            
+            api_data = self.fetch_stock_data(
+                ticker, 
+                start_date.strftime('%Y-%m-%d'), 
+                end_date.strftime('%Y-%m-%d'),
+                interval=api_interval
+            )
+            
+            if api_data is not None and not api_data.empty:
+                try:
+                    # Store the data directly in the database with appropriate frequency
+                    db.insert_stock_data(ticker, api_data, frequency=frequency)
+                    
+                    # Normalize timezone for consistency before using
+                    api_data_normalized = api_data.copy()
+                    api_data_normalized.index = self._normalize_timezone(api_data_normalized.index)
+                    
+                    # Use the fetched data directly (no resampling needed)
+                    stock_data[ticker] = api_data_normalized
+                    successful_tickers.append(ticker)
+                    cache_info[ticker] = "fetched"
+                    
+                except Exception as e:
+                    # If storage fails, still use the data but mark as failed cache
+                    # Normalize timezone for consistency
+                    api_data_normalized = api_data.copy()
+                    api_data_normalized.index = self._normalize_timezone(api_data_normalized.index)
+                    
+                    stock_data[ticker] = api_data_normalized
+                    successful_tickers.append(ticker)
+                    cache_info[ticker] = "fetched_no_cache"
+            else:
+                failed_tickers.append(ticker)
+                cache_info[ticker] = "failed"
+        
+        return stock_data, cache_info, successful_tickers, failed_tickers
     
     def get_stock_info(self, ticker):
         """
@@ -243,6 +393,46 @@ class StockDataFetcher:
         percentage_data = percentage_data.dropna(how='all')
         
         return percentage_data
+    
+    def _normalize_timezone(self, datetime_index):
+        """
+        Normalize datetime index to be timezone-naive for consistent handling.
+        
+        Args:
+            datetime_index: pandas DatetimeIndex that may be timezone-aware or naive
+            
+        Returns:
+            pandas DatetimeIndex: timezone-naive DatetimeIndex
+        """
+        # Handle non-DatetimeIndex cases
+        if not isinstance(datetime_index, pd.DatetimeIndex):
+            try:
+                datetime_index = pd.DatetimeIndex(datetime_index)
+            except:
+                return datetime_index
+        
+        # Remove any NaT values that might cause issues
+        if datetime_index.isna().any():
+            datetime_index = datetime_index.dropna()
+        
+        if hasattr(datetime_index, 'tz') and datetime_index.tz is not None:
+            # Convert timezone-aware to timezone-naive
+            try:
+                return datetime_index.tz_convert(None)
+            except:
+                # If conversion fails, try localize to None
+                try:
+                    return datetime_index.tz_localize(None)
+                except:
+                    # If all else fails, create new timezone-naive index
+                    try:
+                        return pd.DatetimeIndex(datetime_index.values, tz=None)
+                    except:
+                        # Final fallback: recreate from string representation
+                        return pd.DatetimeIndex([pd.Timestamp(ts).tz_localize(None) if pd.notna(ts) else pd.NaT for ts in datetime_index])
+        
+        # Already timezone-naive
+        return datetime_index
     
     @staticmethod
     def get_popular_tickers():

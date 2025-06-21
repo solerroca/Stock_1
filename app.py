@@ -21,6 +21,47 @@ from database import StockDatabase
 from stock_data import StockDataFetcher
 
 
+def normalize_timezone_index(datetime_index):
+    """
+    Normalize datetime index to be timezone-naive for consistent handling.
+    
+    Args:
+        datetime_index: pandas DatetimeIndex that may be timezone-aware or naive
+        
+    Returns:
+        pandas DatetimeIndex: timezone-naive DatetimeIndex
+    """
+    # Handle non-DatetimeIndex cases
+    if not isinstance(datetime_index, pd.DatetimeIndex):
+        try:
+            datetime_index = pd.DatetimeIndex(datetime_index)
+        except:
+            return datetime_index
+    
+    # Remove any NaT values that might cause issues
+    if datetime_index.isna().any():
+        datetime_index = datetime_index.dropna()
+    
+    if hasattr(datetime_index, 'tz') and datetime_index.tz is not None:
+        # Convert timezone-aware to timezone-naive
+        try:
+            return datetime_index.tz_convert(None)
+        except:
+            # If conversion fails, try localize to None
+            try:
+                return datetime_index.tz_localize(None)
+            except:
+                # If all else fails, create new timezone-naive index
+                try:
+                    return pd.DatetimeIndex(datetime_index.values, tz=None)
+                except:
+                    # Final fallback: recreate from string representation
+                    return pd.DatetimeIndex([pd.Timestamp(ts).tz_localize(None) if pd.notna(ts) else pd.NaT for ts in datetime_index])
+    
+    # Already timezone-naive
+    return datetime_index
+
+
 def initialize_session_state():
     """Initialize Streamlit session state variables."""
     if 'stock_data' not in st.session_state:
@@ -33,6 +74,10 @@ def initialize_session_state():
         st.session_state.ticker_input = ""
     if 'last_cleanup_check' not in st.session_state:
         st.session_state.last_cleanup_check = None
+    if 'selected_timeframe' not in st.session_state:
+        st.session_state.selected_timeframe = '1Y'
+    if 'current_tickers' not in st.session_state:
+        st.session_state.current_tickers = []
 
 
 def create_sidebar():
@@ -66,40 +111,6 @@ def create_sidebar():
         tickers = [ticker.strip().upper() for ticker in tickers_input.split(',') if ticker.strip()]
         tickers = tickers[:10]  # Limit to 10 tickers
     
-    # Date range selection
-    st.sidebar.subheader("📅 Date Range")
-    
-    # Preset date options
-    date_option = st.sidebar.selectbox(
-        "Select time period:",
-        ["Custom", "1 Month", "3 Months", "6 Months", "1 Year", "2 Years", "5 Years"]
-    )
-    
-    end_date = date.today()
-    
-    if date_option == "Custom":
-        start_date = st.sidebar.date_input(
-            "Start Date:",
-            value=end_date - timedelta(days=365),
-            max_value=end_date
-        )
-        end_date = st.sidebar.date_input(
-            "End Date:",
-            value=end_date,
-            max_value=end_date
-        )
-    else:
-        days_mapping = {
-            "1 Month": 30,
-            "3 Months": 90,
-            "6 Months": 180,
-            "1 Year": 365,
-            "2 Years": 730,
-            "5 Years": 1825
-        }
-        days = days_mapping[date_option]
-        start_date = end_date - timedelta(days=days)
-    
     # Fetch data button
     fetch_button = st.sidebar.button(
         "📊 Fetch Stock Data", 
@@ -113,7 +124,40 @@ def create_sidebar():
         st.sidebar.markdown(f"**📊 Cached Tickers:** {len(available_tickers)}")
         st.sidebar.caption("Database auto-manages storage size")
     
-    return tickers, start_date, end_date, fetch_button
+    return tickers, fetch_button
+
+
+def create_timeframe_buttons():
+    """Create timeframe selection buttons."""
+    st.subheader("📅 Select Time Period")
+    
+    col1, col2, col3, col4, col5, col6, col7 = st.columns(7)
+    
+    timeframes = {
+        '1M': {'label': '1 Month', 'days': 30, 'col': col1},
+        '3M': {'label': '3 Months', 'days': 90, 'col': col2},
+        '6M': {'label': '6 Months', 'days': 180, 'col': col3},
+        '1Y': {'label': '1 Year', 'days': 365, 'col': col4},
+        '2Y': {'label': '2 Years', 'days': 730, 'col': col5},
+        '3Y': {'label': '3 Years', 'days': 1095, 'col': col6},
+        '5Y': {'label': '5 Years', 'days': 1825, 'col': col7}
+    }
+    
+    for timeframe_key, config in timeframes.items():
+        with config['col']:
+            button_type = "primary" if st.session_state.selected_timeframe == timeframe_key else "secondary"
+            if st.button(
+                config['label'], 
+                key=f"btn_{timeframe_key}",
+                type=button_type,
+                use_container_width=True
+            ):
+                st.session_state.selected_timeframe = timeframe_key
+                # Trigger data refresh if we have tickers
+                if st.session_state.current_tickers:
+                    st.rerun()
+    
+    return timeframes[st.session_state.selected_timeframe]
 
 
 def create_progress_callback():
@@ -154,6 +198,7 @@ def display_stock_info(tickers):
 def filter_data_by_timeframe(stock_data_dict, days):
     """Filter stock data to show only the last N days from the available data."""
     from datetime import timedelta
+    import pandas as pd
     
     if not stock_data_dict:
         return {}
@@ -164,8 +209,12 @@ def filter_data_by_timeframe(stock_data_dict, days):
     
     for ticker, data in stock_data_dict.items():
         if not data.empty:
-            all_start_dates.append(data.index.min())
-            all_end_dates.append(data.index.max())
+            # Normalize timezone information - convert to timezone-naive
+            index = data.index
+            index = normalize_timezone_index(index)
+            
+            all_start_dates.append(index.min())
+            all_end_dates.append(index.max())
     
     if not all_start_dates:
         return {}
@@ -183,8 +232,12 @@ def filter_data_by_timeframe(stock_data_dict, days):
     filtered_data = {}
     for ticker, data in stock_data_dict.items():
         if not data.empty:
+            # Normalize the data index timezone for comparison
+            data_copy = data.copy()
+            data_copy.index = normalize_timezone_index(data_copy.index)
+            
             # Filter data to the common timeframe
-            filtered_df = data[(data.index >= final_cutoff) & (data.index <= common_end)]
+            filtered_df = data_copy[(data_copy.index >= final_cutoff) & (data_copy.index <= common_end)]
             if not filtered_df.empty:
                 filtered_data[ticker] = filtered_df
     
@@ -198,8 +251,9 @@ def create_price_chart(stock_data_dict):
     
     st.subheader("📊 Stock Performance Comparison")
     
-    # Time period selection buttons
-    col1, col2, col3, col4, col5, col6, col7 = st.columns([1, 1, 1, 1, 1, 1, 3])
+    # Use the selected timeframe from the main timeframe buttons
+    if 'selected_timeframe' not in st.session_state:
+        st.session_state.selected_timeframe = '1Y'
     
     time_periods = {
         "1M": 30,
@@ -207,46 +261,12 @@ def create_price_chart(stock_data_dict):
         "6M": 180,
         "1Y": 365,
         "2Y": 730,
+        "3Y": 1095,
         "5Y": 1825
     }
     
-    # Initialize chart timeframe in session state if not exists
-    if 'chart_timeframe' not in st.session_state:
-        st.session_state.chart_timeframe = "1Y"  # Default to 1 year
-    
-    # Create buttons for time period selection
-    with col1:
-        if st.button("1M", key="chart_1m", type="primary" if st.session_state.chart_timeframe == "1M" else "secondary"):
-            st.session_state.chart_timeframe = "1M"
-            st.rerun()
-    
-    with col2:
-        if st.button("3M", key="chart_3m", type="primary" if st.session_state.chart_timeframe == "3M" else "secondary"):
-            st.session_state.chart_timeframe = "3M"
-            st.rerun()
-    
-    with col3:
-        if st.button("6M", key="chart_6m", type="primary" if st.session_state.chart_timeframe == "6M" else "secondary"):
-            st.session_state.chart_timeframe = "6M"
-            st.rerun()
-    
-    with col4:
-        if st.button("1Y", key="chart_1y", type="primary" if st.session_state.chart_timeframe == "1Y" else "secondary"):
-            st.session_state.chart_timeframe = "1Y"
-            st.rerun()
-    
-    with col5:
-        if st.button("2Y", key="chart_2y", type="primary" if st.session_state.chart_timeframe == "2Y" else "secondary"):
-            st.session_state.chart_timeframe = "2Y"
-            st.rerun()
-    
-    with col6:
-        if st.button("5Y", key="chart_5y", type="primary" if st.session_state.chart_timeframe == "5Y" else "secondary"):
-            st.session_state.chart_timeframe = "5Y"
-            st.rerun()
-    
     # Filter data based on selected timeframe
-    filtered_stock_data = filter_data_by_timeframe(stock_data_dict, time_periods[st.session_state.chart_timeframe])
+    filtered_stock_data = filter_data_by_timeframe(stock_data_dict, time_periods[st.session_state.selected_timeframe])
     
     # Check if we're showing all available data (timeframe exceeds available data)
     show_data_limit_warning = False
@@ -285,9 +305,10 @@ def create_price_chart(stock_data_dict):
             "6M": "6 Months",
             "1Y": "1 Year",
             "2Y": "2 Years",
+            "3Y": "3 Years",
             "5Y": "5 Years"
         }
-        st.info(f"ℹ️ Showing all available data (less than {timeframe_labels[st.session_state.chart_timeframe]} available)")
+        st.info(f"ℹ️ Showing all available data (less than {timeframe_labels[st.session_state.selected_timeframe]} available)")
     
     # Create plotly figure
     fig = go.Figure()
@@ -318,11 +339,12 @@ def create_price_chart(stock_data_dict):
         "6M": "6 Months",
         "1Y": "1 Year",
         "2Y": "2 Years",
+        "3Y": "3 Years",
         "5Y": "5 Years"
     }
     
     fig.update_layout(
-        title=f"Stock Performance Comparison - {timeframe_labels[st.session_state.chart_timeframe]} (% Change from Start)",
+        title=f"Stock Performance Comparison - {timeframe_labels[st.session_state.selected_timeframe]} (% Change from Start)",
         xaxis_title="Date",
         yaxis_title="Percentage Change (%)",
         hovermode='x unified',
@@ -388,16 +410,17 @@ def create_volume_chart(stock_data_dict):
     st.subheader("📊 Trading Volume")
     
     # Use the same timeframe as the price chart
-    if 'chart_timeframe' in st.session_state:
+    if 'selected_timeframe' in st.session_state:
         time_periods = {
             "1M": 30,
-            "3M": 90, 
+            "3M": 90,
             "6M": 180,
             "1Y": 365,
             "2Y": 730,
+            "3Y": 1095,
             "5Y": 1825
         }
-        filtered_stock_data = filter_data_by_timeframe(stock_data_dict, time_periods[st.session_state.chart_timeframe])
+        filtered_stock_data = filter_data_by_timeframe(stock_data_dict, time_periods[st.session_state.selected_timeframe])
     else:
         filtered_stock_data = stock_data_dict
     
@@ -435,12 +458,13 @@ def create_volume_chart(stock_data_dict):
             "6M": "6 Months",
             "1Y": "1 Year",
             "2Y": "2 Years",
+            "3Y": "3 Years",
             "5Y": "5 Years"
         }
         
         timeframe_label = ""
-        if 'chart_timeframe' in st.session_state:
-            timeframe_label = f" - {timeframe_labels[st.session_state.chart_timeframe]}"
+        if 'selected_timeframe' in st.session_state:
+            timeframe_label = f" - {timeframe_labels[st.session_state.selected_timeframe]}"
         
         fig.update_layout(
             title=f"Trading Volume - {selected_ticker}{timeframe_label}",
@@ -497,127 +521,113 @@ def main():
     st.markdown("Track and analyze your favorite stocks with interactive charts and performance metrics.")
     
     # Create sidebar
-    tickers, start_date, end_date, fetch_button = create_sidebar()
+    tickers, fetch_button = create_sidebar()
     
     # Main content area
     if fetch_button and tickers:
         if len(tickers) > 10:
             st.error("Please enter no more than 10 stock tickers.")
         else:
-            # Store status messages for display at bottom
-            st.session_state.fetch_status = f"Fetching data for: {', '.join(tickers)}"
-            st.session_state.show_fetch_status = True
+            # Store current tickers for timeframe changes
+            st.session_state.current_tickers = tickers
+            
+            # Get timeframe configuration
+            timeframe_config = create_timeframe_buttons()
             
             # Create progress tracking
             progress_callback, progress_bar, status_text = create_progress_callback()
             
-            # Smart data fetching - check cache first
-            start_date_str = start_date.strftime('%Y-%m-%d')
-            end_date_str = end_date.strftime('%Y-%m-%d')
-            
-            tickers_to_fetch = []
-            cached_data = {}
-            cache_info = []
-            
-            # Check each ticker's data freshness
-            for ticker in tickers:
-                freshness = st.session_state.db.check_data_freshness(ticker, start_date_str, end_date_str)
-                
-                if freshness['needs_fetch']:
-                    tickers_to_fetch.append(ticker)
-                    cache_info.append(f"{ticker}: {freshness['fetch_reason']}")
-                else:
-                    # Get cached data
-                    cached_data[ticker] = st.session_state.db.get_stock_data([ticker], start_date_str, end_date_str)
-                    cache_info.append(f"{ticker}: Using cached data ({freshness['fetch_reason']})")
-            
-            # Store cache analysis for display at bottom
-            if cache_info:
-                st.session_state.cache_analysis = "Data source analysis:\n" + "\n".join(cache_info)
-                st.session_state.show_cache_analysis = True
-            
-            # Only fetch what we need
-            if tickers_to_fetch:
-                st.session_state.fetch_status = f"Fetching fresh data for: {', '.join(tickers_to_fetch)}"
-                if cached_data:
-                    st.session_state.fetch_status += f" (Using cached data for: {', '.join(cached_data.keys())})"
-                st.session_state.show_fetch_status = True
-                
-                # Fetch only the tickers we need
-                result = st.session_state.data_fetcher.fetch_multiple_stocks(
-                    tickers_to_fetch, 
-                    start_date_str, 
-                    end_date_str,
-                    progress_callback
-                )
-            else:
-                # All data is cached!
-                st.session_state.fetch_status = f"Using cached data for all tickers: {', '.join(tickers)}"
-                st.session_state.show_fetch_status = True
-                result = ({}, [], [])
+            # Use smart data fetching with timeframe support
+            result = st.session_state.data_fetcher.fetch_stocks_with_timeframe(
+                tickers,
+                timeframe_config,
+                st.session_state.db,
+                progress_callback
+            )
             
             # Unpack the result
-            fetched_stock_data, successful_tickers, failed_tickers = result
+            stock_data, cache_info, successful_tickers, failed_tickers = result
             
             # Clear progress indicators
             progress_bar.empty()
             status_text.empty()
             
-            # Combine cached and fetched data
-            combined_stock_data = {}
-            
-            # Add cached data (convert database format to yfinance format)
-            for ticker, db_data in cached_data.items():
-                if not db_data.empty:
-                    # Filter data for this specific ticker (since db_data might contain multiple tickers)
-                    ticker_data = db_data[db_data['ticker'] == ticker].copy()
-                    
-                    if not ticker_data.empty:
-                        # Convert database format back to DataFrame with proper index
-                        df = ticker_data.copy()
-                        # Ensure date column is properly formatted (handle timezone-aware dates)
-                        df['date'] = pd.to_datetime(df['date'], format='mixed', utc=True).dt.tz_convert(None)
-                        df = df.set_index('date')
-                        
-                        # Select only the price/volume columns and rename to match yfinance format
-                        df = df[['open', 'high', 'low', 'close', 'adj_close', 'volume']]
-                        df.columns = ['Open', 'High', 'Low', 'Close', 'Adj Close', 'Volume']
-                        
-                        # Ensure index name matches yfinance format
-                        df.index.name = 'Date'
-                        combined_stock_data[ticker] = df
-            
-            # Add fetched data
-            combined_stock_data.update(fetched_stock_data)
-            
-            # Store fetch result messages for display at bottom
-            if successful_tickers:
-                st.session_state.fetch_success_status = f"Successfully fetched fresh data for: {', '.join(successful_tickers)}"
-                st.session_state.show_fetch_success_status = True
+            # Store results for display
+            if stock_data:
+                st.session_state.stock_data = stock_data
+                st.session_state.success_status = f"Successfully loaded data for {len(successful_tickers)} stocks"
+                st.session_state.show_success_status = True
+                
+                # Create cache analysis message
+                cached_count = sum(1 for status in cache_info.values() if status == "cached")
+                fetched_count = sum(1 for status in cache_info.values() if status in ["fetched", "fetched_no_cache"])
+                
+                cache_analysis = []
+                if cached_count > 0:
+                    frequency_type = "weekly" if timeframe_config['days'] >= 730 else "daily"
+                    cache_analysis.append(f"📊 {cached_count} stocks loaded from cache ({frequency_type})")
+                if fetched_count > 0:
+                    frequency_type = "weekly" if timeframe_config['days'] >= 730 else "daily"
+                    cache_analysis.append(f"🌐 {fetched_count} stocks fetched from Yahoo Finance ({frequency_type})")
+                
+                if cache_analysis:
+                    st.session_state.cache_analysis = " | ".join(cache_analysis)
+                    st.session_state.show_cache_analysis = True
             
             if failed_tickers:
-                st.session_state.fetch_failed_status = f"Failed to fetch data for: {', '.join(failed_tickers)}"
+                st.session_state.fetch_failed_status = f"Failed to load data for: {', '.join(failed_tickers)}"
                 st.session_state.show_fetch_failed_status = True
+    
+    # Handle timeframe changes for existing data
+    elif st.session_state.current_tickers and not fetch_button:
+        # Show timeframe buttons
+        timeframe_config = create_timeframe_buttons()
+        
+        # If timeframe changed, reload data
+        if st.session_state.current_tickers:
+            # Create progress tracking
+            progress_callback, progress_bar, status_text = create_progress_callback()
             
-            if combined_stock_data:
-                # Store only newly fetched data in database (cached data is already there)
-                if fetched_stock_data:
-                    with st.spinner("Saving new data to database..."):
-                        for ticker, data in fetched_stock_data.items():
-                            try:
-                                st.session_state.db.insert_stock_data(ticker, data)
-                            except Exception as e:
-                                st.error(f"Error saving {ticker} to database: {str(e)}")
+            # Use smart data fetching with new timeframe
+            result = st.session_state.data_fetcher.fetch_stocks_with_timeframe(
+                st.session_state.current_tickers,
+                timeframe_config,
+                st.session_state.db,
+                progress_callback
+            )
+            
+            # Unpack the result
+            stock_data, cache_info, successful_tickers, failed_tickers = result
+            
+            # Clear progress indicators
+            progress_bar.empty()
+            status_text.empty()
+            
+            # Update session state
+            if stock_data:
+                st.session_state.stock_data = stock_data
                 
-                # Store combined data in session state for immediate display
-                st.session_state.stock_data = combined_stock_data
+                # Create cache analysis message
+                cached_count = sum(1 for status in cache_info.values() if status == "cached")
+                fetched_count = sum(1 for status in cache_info.values() if status in ["fetched", "fetched_no_cache"])
                 
-                # Store success status for display at bottom
-                st.session_state.success_status = "Data fetched and saved successfully!"
-                st.session_state.show_success_status = True
+                cache_analysis = []
+                if cached_count > 0:
+                    frequency_type = "weekly" if timeframe_config['days'] >= 730 else "daily"
+                    cache_analysis.append(f"📊 {cached_count} stocks loaded from cache ({frequency_type})")
+                if fetched_count > 0:
+                    frequency_type = "weekly" if timeframe_config['days'] >= 730 else "daily"
+                    cache_analysis.append(f"🌐 {fetched_count} stocks fetched from Yahoo Finance ({frequency_type})")
+                
+                if cache_analysis:
+                    st.session_state.cache_analysis = " | ".join(cache_analysis)
+                    st.session_state.show_cache_analysis = True
     
     # Display data if available
     if st.session_state.stock_data:
+        # Show timeframe buttons if we have data but no tickers input
+        if not st.session_state.current_tickers:
+            create_timeframe_buttons()
         
         # Main price chart (full width for better visibility)
         create_price_chart(st.session_state.stock_data)
@@ -629,25 +639,16 @@ def main():
         create_volume_chart(st.session_state.stock_data)
         
         # Display status messages at the bottom
-        if hasattr(st.session_state, 'show_fetch_status') and st.session_state.show_fetch_status:
-            st.info(st.session_state.fetch_status)
-            st.session_state.show_fetch_status = False
-        
-        if hasattr(st.session_state, 'show_fetch_success_status') and st.session_state.show_fetch_success_status:
-            st.success(st.session_state.fetch_success_status)
-            st.session_state.show_fetch_success_status = False
+        if hasattr(st.session_state, 'show_success_status') and st.session_state.show_success_status:
+            st.success(st.session_state.success_status)
+            st.session_state.show_success_status = False
         
         if hasattr(st.session_state, 'show_fetch_failed_status') and st.session_state.show_fetch_failed_status:
             st.warning(st.session_state.fetch_failed_status)
             st.session_state.show_fetch_failed_status = False
         
-        if hasattr(st.session_state, 'show_success_status') and st.session_state.show_success_status:
-            st.success(st.session_state.success_status)
-            st.session_state.show_success_status = False
-        
         if hasattr(st.session_state, 'show_cache_analysis') and st.session_state.show_cache_analysis:
-            with st.expander("📊 Data Source Analysis (Click to expand)"):
-                st.text(st.session_state.cache_analysis)
+            st.info(st.session_state.cache_analysis)
             st.session_state.show_cache_analysis = False
         
         if hasattr(st.session_state, 'show_cleanup_message') and st.session_state.show_cleanup_message:
@@ -661,42 +662,41 @@ def main():
         
         **How to get started:**
         1. Enter stock ticker symbols in the sidebar (e.g., AAPL, GOOGL, MSFT)
-        2. Select your desired time period
-        3. Click "Fetch Stock Data" to retrieve and store the data
+        2. Click "Fetch Stock Data" to load 1-year data by default
+        3. Use the timeframe buttons (1Y, 2Y, 3Y, 5Y) to change the time period
         4. View interactive charts and performance metrics
         
         **Features:**
-        - 📊 Interactive price comparison charts
+        - 📊 Interactive price comparison charts with percentage changes
         - 📈 Performance metrics and analysis
-        - 🗄️ Smart caching with automatic database management
+        - 🗄️ Hybrid storage: daily data for ≤1Y, weekly data for 2Y+ periods
+        - ⚡ Optimized performance with direct storage (no resampling)
         - 📱 Responsive design for mobile and desktop
         
         **Tips:**
         - You can track up to 10 stocks at once
         - Data is cached locally for fast access and minimal API usage
+        - Short periods (≤1Y) use daily data, longer periods (2Y+) use weekly data
         - Database automatically manages storage size and cleanup
         """)
         
-        # Show some popular tickers as examples
+        # Show popular tickers as clickable buttons
         popular_tickers = st.session_state.data_fetcher.get_popular_tickers()
-        st.markdown("**Popular Stock Tickers:**")
+        st.markdown("**💡 Popular Stocks - Click to add:**")
         
-        # Create columns for ticker buttons
+        # Create columns for popular ticker buttons
         cols = st.columns(5)
         for i, ticker in enumerate(popular_tickers[:10]):
             with cols[i % 5]:
-                if st.button(f"📊 {ticker}", key=f"popular_{ticker}"):
-                    # Add ticker to the input field
+                if st.button(ticker, key=f"popular_{ticker}"):
+                    # Add ticker to input if not already there
                     current_input = st.session_state.ticker_input.strip()
                     if current_input:
-                        # Add to existing tickers if not already present
-                        existing_tickers = [t.strip().upper() for t in current_input.split(',') if t.strip()]
-                        if ticker not in existing_tickers:
+                        # Check if ticker is already in the input
+                        current_tickers = [t.strip().upper() for t in current_input.split(',')]
+                        if ticker not in current_tickers:
                             st.session_state.ticker_input = current_input + f", {ticker}"
-                        else:
-                            st.info(f"{ticker} is already in your list!")
                     else:
-                        # Set as first ticker
                         st.session_state.ticker_input = ticker
                     st.rerun()
 
