@@ -317,4 +317,123 @@ class StockDatabase:
             # Rough estimate: 5/7 of days are trading days
             return int(total_days * 5 / 7)
         except:
-            return 250  # Default to about 1 year of trading days 
+            return 250  # Default to about 1 year of trading days
+    
+    def get_database_stats(self):
+        """
+        Get statistics about the database size and usage.
+        
+        Returns:
+            dict: Database statistics
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            
+            # Get total record count
+            cursor.execute('SELECT COUNT(*) FROM stock_data')
+            total_records = cursor.fetchone()[0]
+            
+            # Get unique tickers count
+            cursor.execute('SELECT COUNT(DISTINCT ticker) FROM stock_data')
+            unique_tickers = cursor.fetchone()[0]
+            
+            # Get date range
+            cursor.execute('SELECT MIN(date), MAX(date) FROM stock_data')
+            date_range = cursor.fetchone()
+            
+            # Get database file size
+            import os
+            db_size_bytes = os.path.getsize(self.db_path) if os.path.exists(self.db_path) else 0
+            db_size_mb = db_size_bytes / (1024 * 1024)
+            
+            return {
+                'total_records': total_records,
+                'unique_tickers': unique_tickers,
+                'date_range': date_range,
+                'size_mb': db_size_mb,
+                'size_bytes': db_size_bytes
+            }
+    
+    def cleanup_old_data(self, max_size_mb=50, max_age_days=180):
+        """
+        Automatically clean up old data to keep database size manageable.
+        
+        Args:
+            max_size_mb (int): Maximum database size in MB before cleanup
+            max_age_days (int): Maximum age of data to keep in days
+        """
+        stats = self.get_database_stats()
+        
+        # Check if cleanup is needed
+        needs_cleanup = (
+            stats['size_mb'] > max_size_mb or 
+            stats['total_records'] > 50000  # Also cleanup if too many records
+        )
+        
+        if not needs_cleanup:
+            return False  # No cleanup needed
+        
+        from datetime import datetime, timedelta
+        
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            
+            # Calculate cutoff date
+            cutoff_date = (datetime.now() - timedelta(days=max_age_days)).strftime('%Y-%m-%d')
+            
+            # First, try deleting very old data (older than max_age_days)
+            cursor.execute('DELETE FROM stock_data WHERE date < ?', (cutoff_date,))
+            deleted_old = cursor.rowcount
+            
+            # If still too big, delete data for tickers that haven't been accessed recently
+            if stats['size_mb'] > max_size_mb:
+                # Keep only the most recent 90 days of data for each ticker
+                recent_cutoff = (datetime.now() - timedelta(days=90)).strftime('%Y-%m-%d')
+                cursor.execute('DELETE FROM stock_data WHERE date < ?', (recent_cutoff,))
+                deleted_recent = cursor.rowcount
+            else:
+                deleted_recent = 0
+            
+            # If still too big, keep only top 20 most common tickers
+            if stats['size_mb'] > max_size_mb:
+                cursor.execute('''
+                    DELETE FROM stock_data 
+                    WHERE ticker NOT IN (
+                        SELECT ticker 
+                        FROM (
+                            SELECT ticker, COUNT(*) as count 
+                            FROM stock_data 
+                            GROUP BY ticker 
+                            ORDER BY count DESC 
+                            LIMIT 20
+                        )
+                    )
+                ''')
+                deleted_uncommon = cursor.rowcount
+            else:
+                deleted_uncommon = 0
+            
+            conn.commit()
+            
+            total_deleted = deleted_old + deleted_recent + deleted_uncommon
+            
+            return {
+                'cleanup_performed': True,
+                'deleted_old': deleted_old,
+                'deleted_recent': deleted_recent, 
+                'deleted_uncommon': deleted_uncommon,
+                'total_deleted': total_deleted,
+                'cutoff_date': cutoff_date
+            }
+    
+    def update_access_time(self, ticker):
+        """
+        Update the last access time for a ticker (for cleanup prioritization).
+        This could be expanded to track usage patterns.
+        
+        Args:
+            ticker (str): Stock ticker symbol
+        """
+        # For now, we'll use the created_at field that already exists
+        # In a more sophisticated system, we'd add a last_accessed column
+        pass 

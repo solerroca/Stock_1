@@ -226,10 +226,21 @@ class StockDataFetcher:
         percentage_data = pd.DataFrame()
         
         for ticker, data in stock_data_dict.items():
-            if not data.empty:
-                # Calculate percentage change from first price
-                percentage_change = ((data['Close'] / data['Close'].iloc[0]) - 1) * 100
-                percentage_data[ticker] = percentage_change
+            if not data.empty and 'Close' in data.columns:
+                # Clean the data first - remove any NaN values
+                clean_data = data['Close'].dropna()
+                
+                if len(clean_data) > 0:
+                    # Calculate percentage change from first price
+                    first_price = clean_data.iloc[0]
+                    if first_price > 0:  # Ensure we don't divide by zero
+                        percentage_change = ((clean_data / first_price) - 1) * 100
+                        # Reindex to match original data index, filling missing values
+                        percentage_change = percentage_change.reindex(data.index)
+                        percentage_data[ticker] = percentage_change
+        
+        # Drop any rows where all values are NaN
+        percentage_data = percentage_data.dropna(how='all')
         
         return percentage_data
     
