@@ -278,75 +278,52 @@ class StockDatabase:
             result = cursor.fetchone()
             return result if result and result[0] else (None, None)
     
-    def check_data_freshness(self, ticker, start_date, end_date, frequency='daily'):
+    def check_batch_data_freshness(self, tickers, start_date, end_date, frequency='daily'):
         """
-        Check if we have fresh data for a ticker in the requested date range.
+        Check if we have fresh data for a BATCH of tickers.
         
         Args:
-            ticker (str): Stock ticker symbol
+            tickers (list): List of stock ticker symbols
             start_date (str): Requested start date
             end_date (str): Requested end date
             frequency (str): Data frequency ('daily' or 'weekly')
             
         Returns:
-            dict: Information about data availability and freshness
+            bool: True if all tickers have fresh data, False otherwise
         """
-        with sqlite3.connect(self.db_path) as conn:
-            cursor = conn.cursor()
-            
-            # Check what data we have
-            cursor.execute('''
-                SELECT MIN(date), MAX(date), COUNT(*) 
-                FROM stock_data 
-                WHERE ticker = ? AND frequency = ? AND date BETWEEN ? AND ?
-            ''', (ticker, frequency, start_date, end_date))
-            
-            result = cursor.fetchone()
-            
-            if not result or not result[0]:
-                return {
-                    'has_data': False,
-                    'needs_fetch': True,
-                    'fetch_reason': 'No data found in database'
-                }
-            
-            db_start, db_end, count = result
-            
-            # Check if we have recent data (within last 24 hours for current date)
-            from datetime import datetime, timedelta
-            today = datetime.now().date()
-            yesterday = today - timedelta(days=1)
-            
-            # If requesting current data, check if we have yesterday's data
-            if end_date >= str(today) and db_end >= str(yesterday):
-                return {
-                    'has_data': True,
-                    'needs_fetch': False,
-                    'fetch_reason': 'Recent data available',
-                    'data_range': (db_start, db_end),
-                    'record_count': count
-                }
-            
-            # Check if we have complete coverage for requested range
-            expected_days = self._calculate_trading_days(start_date, end_date)
-            coverage_ratio = count / max(expected_days, 1)
-            
-            if coverage_ratio >= 0.8:  # 80% coverage is acceptable
-                return {
-                    'has_data': True,
-                    'needs_fetch': False,
-                    'fetch_reason': f'Good coverage ({coverage_ratio:.1%})',
-                    'data_range': (db_start, db_end),
-                    'record_count': count
-                }
-            else:
-                return {
-                    'has_data': True,
-                    'needs_fetch': True,
-                    'fetch_reason': f'Incomplete data ({coverage_ratio:.1%} coverage)',
-                    'data_range': (db_start, db_end),
-                    'record_count': count
-                }
+        from datetime import datetime, timedelta
+
+        if not tickers:
+            return False
+
+        # For each ticker, check if the data is recent and complete enough
+        for ticker in tickers:
+            min_date, max_date = self.get_data_date_range(ticker, frequency)
+
+            # 1. Check if we have any data at all
+            if min_date is None or max_date is None:
+                return False  # Missing data for at least one ticker
+
+            # 2. Check if the date range is sufficient
+            try:
+                # Convert string dates to datetime objects for comparison
+                req_start_dt = datetime.strptime(start_date, '%Y-%m-%d').date()
+                req_end_dt = datetime.strptime(end_date, '%Y-%m-%d').date()
+                db_min_dt = datetime.strptime(min_date, '%Y-%m-%d').date()
+                db_max_dt = datetime.strptime(max_date, '%Y-%m-%d').date()
+                
+                # The cached data must cover the requested start date
+                if db_min_dt > req_start_dt:
+                    return False
+                
+                # The cached data must be recent (up to yesterday)
+                if db_max_dt < req_end_dt - timedelta(days=1):
+                    return False
+            except ValueError:
+                return False # Date format error
+
+        # If all tickers pass all checks, the batch is considered fresh
+        return True
     
     def _calculate_trading_days(self, start_date, end_date):
         """

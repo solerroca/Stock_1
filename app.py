@@ -275,38 +275,13 @@ def filter_data_by_timeframe(stock_data_dict, days):
     return filtered_data
 
 
-def create_price_chart(stock_data_dict, days_in_period):
-    """Create an interactive price chart."""
-    if not stock_data_dict:
+def create_price_chart(filtered_stock_data):
+    """Create an interactive price chart from pre-filtered data."""
+    if not filtered_stock_data:
         return
     
     st.subheader("📊 Stock Performance Comparison")
     
-    filtered_stock_data = filter_data_by_timeframe(stock_data_dict, days_in_period)
-    
-    # --- START DEBUGGING ---
-    # with st.expander("🔍 Debug: Data Filtering & Normalization", expanded=False):
-    #     st.write("**1. Initial Data for Charting (before filtering):**")
-    #     st.write({k: f"{len(v)} rows from {v.index.min().date() if not v.empty else 'N/A'} to {v.index.max().date() if not v.empty else 'N/A'}" for k, v in stock_data_dict.items()})
-        
-    #     st.write("**2. Data After Timeframe Filter (`filter_data_by_timeframe`):**")
-    #     if filtered_stock_data:
-    #         st.write({k: f"{len(v)} rows from {v.index.min().date() if not v.empty else 'N/A'} to {v.index.max().date() if not v.empty else 'N/A'}" for k, v in filtered_stock_data.items()})
-    #     else:
-    #         st.write("No data returned from filter.")
-
-    #     percentage_data = st.session_state.data_fetcher.normalize_prices(filtered_stock_data)
-    #     st.write("**3. Final Data for Plotting (`normalize_prices` output):**")
-    #     st.write(f"Columns in final DataFrame: `{percentage_data.columns.tolist()}`")
-    #     if not percentage_data.empty:
-    #         st.dataframe(percentage_data.head())
-    # --- END DEBUGGING ---
-
-    if not filtered_stock_data:
-        st.warning("No data available for the selected timeframe.")
-        return
-
-    # Re-calculate percentage_data outside of debugger for main logic
     percentage_data = st.session_state.data_fetcher.normalize_prices(filtered_stock_data)
     
     st.info("📈 **Chart Explanation:** This chart shows the percentage change in stock prices from the start of the selected time period. All stocks begin at 0% and show their relative performance over time. A line above 0% indicates gains, while below 0% shows losses.")
@@ -340,15 +315,15 @@ def create_price_chart(stock_data_dict, days_in_period):
     st.plotly_chart(fig, use_container_width=True)
 
 
-def create_performance_table(stock_data_dict):
-    """Create a comprehensive performance metrics and stock information table."""
-    if not stock_data_dict:
+def create_performance_table(filtered_stock_data):
+    """Create a comprehensive performance metrics table from pre-filtered data."""
+    if not filtered_stock_data:
         return
     
     st.subheader("📊 Performance Metrics & Stock Information")
     
     metrics_data = []
-    for ticker, data in stock_data_dict.items():
+    for ticker, data in filtered_stock_data.items():
         metrics = st.session_state.data_fetcher.calculate_performance_metrics(data)
         stock_info = st.session_state.data_fetcher.get_stock_info(ticker, st.session_state.db)
         
@@ -408,19 +383,13 @@ def create_performance_table(stock_data_dict):
         st.dataframe(styled_df, use_container_width=True)
 
 
-def create_volume_chart(stock_data_dict, days_in_period):
-    """Create a volume chart."""
-    if not stock_data_dict:
+def create_volume_chart(filtered_stock_data):
+    """Create a volume chart from pre-filtered data."""
+    if not filtered_stock_data:
         return
     
     st.subheader("📊 Trading Volume")
     
-    filtered_stock_data = filter_data_by_timeframe(stock_data_dict, days_in_period)
-
-    if not filtered_stock_data:
-        st.warning("No data available to display volume chart.")
-        return
-
     selected_ticker = st.selectbox(
         "Select ticker for volume chart:",
         list(filtered_stock_data.keys())
@@ -476,9 +445,9 @@ def main():
                     st.rerun()
         return
 
-    # --- New Data Fetching Logic ---
+    # --- Optimized Data Fetching Logic ---
 
-    # 1. Primary Fetch for Daily Data (1 Year)
+    # 1. Determine if a primary fetch is needed (change in tickers, first load, manual button)
     primary_fetch_needed = False
     if fetch_button and tickers:
         primary_fetch_needed = True
@@ -491,68 +460,75 @@ def main():
     if primary_fetch_needed:
         st.session_state.current_tickers = tickers
         
-        # Always fetch 1 year of daily data for the base
-        timeframe_config = {'days': 365, 'label': '1Y'}
-        progress_callback, progress_bar, status_text = create_progress_callback()
+        # --- Check for 1-Year Daily data in cache before fetching ---
+        end_date = date.today()
+        start_date = end_date - timedelta(days=365)
         
-        result = st.session_state.data_fetcher.fetch_stocks_with_timeframe(
-            tickers, timeframe_config, st.session_state.db, progress_callback
+        is_daily_data_fresh = st.session_state.db.check_batch_data_freshness(
+            tickers, start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d'), 'daily'
         )
         
-        daily_data, _, _, failed_tickers = result
-        progress_bar.empty()
-        status_text.empty()
-        
-        st.session_state.daily_data = daily_data
-        st.session_state.weekly_data = {}  # Clear weekly data on new primary fetch
-        st.session_state.last_fetched_weekly_timeframe = None
-        
-        if failed_tickers:
-            st.warning(f"Failed to load data for: {', '.join(failed_tickers)}")
-
-    # 2. Secondary Fetch for Weekly Data (2Y, 3Y, 5Y)
-    is_long_term_view = days_in_period >= 730
-    if is_long_term_view:
-        weekly_fetch_needed = False
-        # Fetch if we don't have weekly data or if the timeframe changed
-        if not st.session_state.weekly_data or st.session_state.last_fetched_weekly_timeframe != st.session_state.selected_timeframe:
-             weekly_fetch_needed = True
-
-        if weekly_fetch_needed and tickers:
-            st.session_state.last_fetched_weekly_timeframe = st.session_state.selected_timeframe
-            timeframe_config = {'days': days_in_period, 'label': st.session_state.selected_timeframe}
+        if is_daily_data_fresh:
+            # Load from DB if fresh
+            df = st.session_state.db.get_stock_data(tickers, start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d'), 'daily')
+            daily_data = {ticker: df[df['ticker'] == ticker].set_index('date') for ticker in tickers}
+            st.session_state.daily_data = daily_data
+        else:
+            # Fetch from API if not fresh
+            timeframe_config = {'days': 365, 'label': '1Y'}
             progress_callback, progress_bar, status_text = create_progress_callback()
-            
-            result = st.session_state.data_fetcher.fetch_stocks_with_timeframe(
+            result, _, _, failed_tickers = st.session_state.data_fetcher.fetch_stocks_with_timeframe(
                 tickers, timeframe_config, st.session_state.db, progress_callback
             )
-            
-            weekly_data, _, _, failed_tickers = result
-            progress_bar.empty()
-            status_text.empty()
-            
+            progress_bar.empty(); status_text.empty()
+            st.session_state.daily_data = result
+            if failed_tickers:
+                st.warning(f"Failed to load daily data for: {', '.join(failed_tickers)}")
+        
+        st.session_state.weekly_data = {}  # Clear weekly data on new primary fetch
+
+    # 2. Handle Long-Term View (2Y, 3Y, 5Y)
+    is_long_term_view = days_in_period >= 730
+    if is_long_term_view and tickers and not st.session_state.weekly_data:
+        
+        # --- Check for 5-Year Weekly data in cache before fetching ---
+        end_date = date.today()
+        start_date = end_date - timedelta(days=1825) # Always check for 5 years
+        
+        is_weekly_data_fresh = st.session_state.db.check_batch_data_freshness(
+            tickers, start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d'), 'weekly'
+        )
+
+        if is_weekly_data_fresh:
+            # Load from DB if fresh
+            df = st.session_state.db.get_stock_data(tickers, start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d'), 'weekly')
+            weekly_data = {ticker: df[df['ticker'] == ticker].set_index('date') for ticker in tickers}
             st.session_state.weekly_data = weekly_data
+        else:
+            # Fetch 5 years of weekly data from API if not fresh
+            timeframe_config = {'days': 1825, 'label': '5Y'}
+            progress_callback, progress_bar, status_text = create_progress_callback()
+            result, _, _, failed_tickers = st.session_state.data_fetcher.fetch_stocks_with_timeframe(
+                tickers, timeframe_config, st.session_state.db, progress_callback
+            )
+            progress_bar.empty(); status_text.empty()
+            st.session_state.weekly_data = result
             if failed_tickers:
                 st.warning(f"Failed to load weekly data for: {', '.join(failed_tickers)}")
-    
-    # --- End of New Data Fetching Logic ---
 
-    # Determine which data to display
-    data_to_display = {}
-    if is_long_term_view:
-        data_to_display = st.session_state.weekly_data
-    else:
-        data_to_display = st.session_state.daily_data
+    # 3. Determine which data to display
+    data_to_display = st.session_state.weekly_data if is_long_term_view else st.session_state.daily_data
 
-    # Display charts and tables if data is available
+    # Filter the data ONCE, and pass the filtered data to all components
     if data_to_display:
-        # For the performance table, we want to show metrics for the full available period
-        # For daily data, this is 1 year. For weekly, it's the selected long-term view.
-        table_data = filter_data_by_timeframe(data_to_display, 365 if not is_long_term_view else days_in_period)
+        filtered_data = filter_data_by_timeframe(data_to_display, days_in_period)
         
-        create_price_chart(data_to_display, days_in_period)
-        create_performance_table(table_data)
-        create_volume_chart(data_to_display, days_in_period)
+        if filtered_data:
+            create_price_chart(filtered_data)
+            create_performance_table(filtered_data)
+            create_volume_chart(filtered_data)
+        else:
+            st.warning("No data available for the selected timeframe.")
     elif not tickers:
         st.info("Enter stock tickers in the sidebar to get started.")
 
