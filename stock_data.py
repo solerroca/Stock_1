@@ -282,21 +282,29 @@ class StockDataFetcher:
         
         return stock_data, cache_info, successful_tickers, failed_tickers
     
-    def get_stock_info(self, ticker):
+    def get_stock_info(self, ticker, db=None):
         """
-        Get basic information about a stock.
+        Get basic information about a stock with caching.
         
         Args:
             ticker (str): Stock ticker symbol
+            db (StockDatabase, optional): Database instance for caching
             
         Returns:
             dict: Dictionary with stock information
         """
+        # Try to get cached info first
+        if db and db.is_stock_info_fresh(ticker, max_age_days=30):
+            cached_info = db.get_cached_stock_info(ticker)
+            if cached_info:
+                return cached_info
+        
+        # If no cache or stale data, fetch from API
         try:
             stock = yf.Ticker(ticker)
             info = stock.info
             
-            return {
+            stock_info = {
                 'name': info.get('longName', ticker),
                 'sector': info.get('sector', 'N/A'),
                 'industry': info.get('industry', 'N/A'),
@@ -304,7 +312,25 @@ class StockDataFetcher:
                 'pe_ratio': info.get('trailingPE', 'N/A'),
                 'dividend_yield': info.get('dividendYield', 'N/A')
             }
+            
+            # Cache the fresh data
+            if db:
+                try:
+                    db.store_stock_info(ticker, stock_info)
+                except Exception as e:
+                    # If caching fails, still return the data
+                    pass
+            
+            return stock_info
+            
         except Exception:
+            # If API fails, try to get cached data even if stale
+            if db:
+                cached_info = db.get_cached_stock_info(ticker)
+                if cached_info:
+                    return cached_info
+            
+            # Final fallback
             return {
                 'name': ticker,
                 'sector': 'N/A',
@@ -365,6 +391,7 @@ class StockDataFetcher:
     def normalize_prices(self, stock_data_dict, base_value=100):
         """
         Calculate percentage change from starting price for comparison.
+        All stocks will start at 0% from the earliest common date.
         
         Args:
             stock_data_dict (dict): Dictionary with ticker as key and DataFrame as value
@@ -373,23 +400,47 @@ class StockDataFetcher:
         Returns:
             pd.DataFrame: DataFrame with percentage changes
         """
-        percentage_data = pd.DataFrame()
+        if not stock_data_dict:
+            return pd.DataFrame()
+        
+        # Find the earliest common start date across all stocks
+        earliest_dates = []
+        for ticker, data in stock_data_dict.items():
+            if not data.empty:
+                earliest_dates.append(data.index.min())
+        
+        if not earliest_dates:
+            return pd.DataFrame()
+        
+        # Use the latest of the earliest dates as the common start date
+        # This ensures all stocks have data from this date forward
+        common_start_date = max(earliest_dates)
+        
+        all_series = []
         
         for ticker, data in stock_data_dict.items():
             if not data.empty and 'Close' in data.columns:
-                # Clean the data first - remove any NaN values
-                clean_data = data['Close'].dropna()
+                # Filter data to start from common start date
+                filtered_data = data[data.index >= common_start_date]['Close'].dropna()
                 
-                if len(clean_data) > 0:
-                    # Calculate percentage change from first price
-                    first_price = clean_data.iloc[0]
+                if len(filtered_data) > 0:
+                    # Calculate percentage change from the price at common start date
+                    first_price = filtered_data.iloc[0]
                     if first_price > 0:  # Ensure we don't divide by zero
-                        percentage_change = ((clean_data / first_price) - 1) * 100
-                        # Reindex to match original data index, filling missing values
-                        percentage_change = percentage_change.reindex(data.index)
-                        percentage_data[ticker] = percentage_change
+                        percentage_change = ((filtered_data / first_price) - 1) * 100
+                        percentage_change.name = ticker # Set name for concat
+                        all_series.append(percentage_change)
         
-        # Drop any rows where all values are NaN
+        # Combine all series at once, which handles different index lengths correctly
+        if not all_series:
+            return pd.DataFrame()
+            
+        percentage_data = pd.concat(all_series, axis=1)
+        
+        # Forward-fill handles missing values from non-trading days
+        percentage_data = percentage_data.ffill()
+        
+        # A single dropna at the end cleans up any remaining empty rows
         percentage_data = percentage_data.dropna(how='all')
         
         return percentage_data

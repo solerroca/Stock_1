@@ -67,6 +67,20 @@ class StockDatabase:
                 ON stock_data(ticker, date, frequency)
             ''')
             
+            # Create table for stock info (company details that don't change often)
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS stock_info (
+                    ticker TEXT PRIMARY KEY,
+                    name TEXT,
+                    sector TEXT,
+                    industry TEXT,
+                    market_cap INTEGER,
+                    pe_ratio REAL,
+                    dividend_yield REAL,
+                    last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            
             conn.commit()
     
     def insert_stock_data(self, ticker, data_df, frequency='daily'):
@@ -117,7 +131,7 @@ class StockDatabase:
                 else:
                     final_data[db_col] = None
             
-            # Insert data, replacing duplicates using INSERT OR REPLACE
+            # Insert data, replacing duplicates using INSERT OR IGNORE
             cursor = conn.cursor()
             for _, row in final_data.iterrows():
                 # Convert pandas/numpy types to Python native types and handle NaN values
@@ -139,7 +153,7 @@ class StockDatabase:
                     date_str = str(date_str)
                 
                 cursor.execute('''
-                    INSERT OR REPLACE INTO stock_data 
+                    INSERT OR IGNORE INTO stock_data 
                     (ticker, date, frequency, open, high, low, close, adj_close, volume)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ''', (
@@ -191,6 +205,7 @@ class StockDatabase:
             
             # Execute query and return DataFrame
             df = pd.read_sql_query(query, conn, params=params)
+            
             # Handle timezone-aware date parsing - ensure consistent timezone-naive format
             if not df.empty:
                 try:
@@ -473,4 +488,91 @@ class StockDatabase:
         """
         # For now, we'll use the created_at field that already exists
         # In a more sophisticated system, we'd add a last_accessed column
-        pass 
+        pass
+    
+    def store_stock_info(self, ticker, stock_info):
+        """
+        Store stock information (company details) in the database.
+        
+        Args:
+            ticker (str): Stock ticker symbol
+            stock_info (dict): Dictionary with stock information
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            
+            # Clean values and handle None/NaN
+            def clean_value(value):
+                if pd.isna(value) or value == 'N/A':
+                    return None
+                if hasattr(value, 'item'):
+                    return value.item()
+                return value
+            
+            cursor.execute('''
+                INSERT OR REPLACE INTO stock_info 
+                (ticker, name, sector, industry, market_cap, pe_ratio, dividend_yield, last_updated)
+                VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ''', (
+                ticker,
+                clean_value(stock_info.get('name')),
+                clean_value(stock_info.get('sector')),
+                clean_value(stock_info.get('industry')),
+                clean_value(stock_info.get('market_cap')),
+                clean_value(stock_info.get('pe_ratio')),
+                clean_value(stock_info.get('dividend_yield'))
+            ))
+            conn.commit()
+    
+    def get_cached_stock_info(self, ticker):
+        """
+        Retrieve stock information from the database.
+        
+        Args:
+            ticker (str): Stock ticker symbol
+            
+        Returns:
+            dict: Dictionary with stock information, or None if not found
+        """
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT name, sector, industry, market_cap, pe_ratio, dividend_yield, last_updated
+                FROM stock_info
+                WHERE ticker = ?
+            ''', (ticker,))
+            
+            result = cursor.fetchone()
+            if result:
+                return {
+                    'name': result[0] or ticker,
+                    'sector': result[1] or 'N/A',
+                    'industry': result[2] or 'N/A',
+                    'market_cap': result[3] or 'N/A',
+                    'pe_ratio': result[4] or 'N/A',
+                    'dividend_yield': result[5] or 'N/A',
+                    'last_updated': result[6]
+                }
+            return None
+    
+    def is_stock_info_fresh(self, ticker, max_age_days=30):
+        """
+        Check if stock info is fresh (not older than max_age_days).
+        
+        Args:
+            ticker (str): Stock ticker symbol
+            max_age_days (int): Maximum age in days
+            
+        Returns:
+            bool: True if fresh, False if stale or not found
+        """
+        stock_info = self.get_cached_stock_info(ticker)
+        if not stock_info:
+            return False
+        
+        try:
+            from datetime import datetime, timedelta
+            last_updated = datetime.strptime(stock_info['last_updated'], '%Y-%m-%d %H:%M:%S')
+            return (datetime.now() - last_updated).days < max_age_days
+        except:
+            return False
