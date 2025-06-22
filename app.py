@@ -388,18 +388,34 @@ def create_volume_chart(filtered_stock_data):
     if not filtered_stock_data:
         return
     
-    st.subheader("📊 Trading Volume")
+    # Check if at least one ticker has volume data to display the section
+    has_volume_data = any('volume' in data.columns and not data['volume'].isnull().all() for data in filtered_stock_data.values())
     
+    if not has_volume_data:
+        return # Don't show the volume chart section if no data is available
+
+    st.subheader("📊 Trading Volume")
+
+    # Filter tickers to only include those with volume data
+    tickers_with_volume = [
+        ticker for ticker, data in filtered_stock_data.items() 
+        if 'volume' in data.columns and not data['volume'].isnull().all()
+    ]
+
+    if not tickers_with_volume:
+        st.info("No volume data available for the selected tickers.")
+        return
+
     selected_ticker = st.selectbox(
         "Select ticker for volume chart:",
-        list(filtered_stock_data.keys())
+        tickers_with_volume
     )
     
     if selected_ticker and selected_ticker in filtered_stock_data:
         data = filtered_stock_data[selected_ticker]
         fig = go.Figure()
         fig.add_trace(go.Bar(
-            x=data.index, y=data['Volume'], name='Volume',
+            x=data.index, y=data['volume'], name='Volume',
             marker_color='lightblue',
             hovertemplate='<b>Volume</b><br>Date: %{x|%Y-%m-%d}<br>Volume: %{y:,.0f}<extra></extra>'
         ))

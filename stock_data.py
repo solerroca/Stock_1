@@ -115,6 +115,9 @@ class StockDataFetcher:
                     pass
                     return None
                 
+                # --- FIX: Standardize column names to lowercase ---
+                data.columns = [col.lower() for col in data.columns]
+                
                 # Normalize timezone to avoid comparison issues
                 data.index = self._normalize_timezone(data.index)
                 
@@ -350,15 +353,15 @@ class StockDataFetcher:
         Returns:
             dict: Dictionary with performance metrics
         """
-        if data.empty:
+        if data.empty or 'close' not in data.columns:
             return {}
         
         try:
             # Calculate returns
-            returns = data['Close'].pct_change().dropna()
+            returns = data['close'].pct_change().dropna()
             
             # Calculate metrics
-            total_return = (data['Close'].iloc[-1] / data['Close'].iloc[0] - 1) * 100
+            total_return = (data['close'].iloc[-1] / data['close'].iloc[0] - 1) * 100
             avg_daily_return = returns.mean() * 100
             volatility = returns.std() * 100
             
@@ -379,8 +382,8 @@ class StockDataFetcher:
                 'volatility': round(volatility, 2),
                 'sharpe_ratio': round(sharpe_ratio, 3),
                 'max_drawdown': round(max_drawdown, 2),
-                'start_price': round(data['Close'].iloc[0], 2),
-                'end_price': round(data['Close'].iloc[-1], 2),
+                'start_price': round(data['close'].iloc[0], 2),
+                'end_price': round(data['close'].iloc[-1], 2),
                 'trading_days': len(data)
             }
             
@@ -419,9 +422,9 @@ class StockDataFetcher:
         all_series = []
         
         for ticker, data in stock_data_dict.items():
-            if not data.empty and 'Close' in data.columns:
+            if not data.empty and 'close' in data.columns:
                 # Filter data to start from common start date
-                filtered_data = data[data.index >= common_start_date]['Close'].dropna()
+                filtered_data = data[data.index >= common_start_date]['close'].dropna()
                 
                 if len(filtered_data) > 0:
                     # Calculate percentage change from the price at common start date
