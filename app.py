@@ -97,11 +97,6 @@ def create_sidebar():
         key="ticker_text_area"
     )
     
-    # Popular tickers suggestions
-    popular_tickers = st.session_state.data_fetcher.get_popular_tickers()
-    st.sidebar.markdown("**Popular Stocks:**")
-    st.sidebar.markdown(", ".join(popular_tickers[:10]))
-    
     # Update session state with current input
     st.session_state.ticker_input = tickers_input
     
@@ -118,6 +113,78 @@ def create_sidebar():
         use_container_width=True
     )
     
+    # Popular tickers suggestions as clickable buttons
+    popular_tickers = st.session_state.data_fetcher.get_popular_tickers()
+    st.sidebar.markdown("**Popular Stocks:**")
+    
+    # Create columns for popular ticker buttons in sidebar
+    cols = st.sidebar.columns(3)
+    for i, ticker in enumerate(popular_tickers[:12]):  # Show 12 tickers to fill 3 columns nicely
+        with cols[i % 3]:
+            if st.button(ticker, key=f"sidebar_popular_{ticker}", use_container_width=True):
+                # Add ticker to input if not already there
+                current_input = st.session_state.ticker_input.strip()
+                if current_input:
+                    # Check if ticker is already in the input
+                    current_tickers = [t.strip().upper() for t in current_input.split(',')]
+                    if ticker not in current_tickers:
+                        st.session_state.ticker_input = current_input + f", {ticker}"
+                else:
+                    st.session_state.ticker_input = ticker
+                st.rerun()
+    
+    # Popular ETFs suggestions as clickable buttons
+    st.sidebar.markdown("**Popular ETFs:**")
+    
+    # Define popular ETF tickers
+    popular_etfs = [
+        'SPY', 'QQQ', 'VTI', 'IWM', 'EFA', 'VEA',
+        'VWO', 'GLD', 'SLV', 'TLT', 'HYG', 'LQD'
+    ]
+    
+    # Create columns for popular ETF buttons in sidebar
+    etf_cols = st.sidebar.columns(3)
+    for i, etf in enumerate(popular_etfs):
+        with etf_cols[i % 3]:
+            if st.button(etf, key=f"sidebar_popular_etf_{etf}", use_container_width=True):
+                # Add ETF to input if not already there
+                current_input = st.session_state.ticker_input.strip()
+                if current_input:
+                    # Check if ETF is already in the input
+                    current_tickers = [t.strip().upper() for t in current_input.split(',')]
+                    if etf not in current_tickers:
+                        st.session_state.ticker_input = current_input + f", {etf}"
+                else:
+                    st.session_state.ticker_input = etf
+                st.rerun()
+    
+    # Popular Crypto suggestions as clickable buttons
+    st.sidebar.markdown("**Popular Crypto:**")
+    
+    # Define popular crypto tickers (using Yahoo Finance crypto symbols)
+    popular_crypto = [
+        'BTC-USD', 'ETH-USD', 'BNB-USD', 'XRP-USD', 'ADA-USD', 'SOL-USD',
+        'DOGE-USD', 'DOT-USD', 'AVAX-USD', 'MATIC-USD', 'LTC-USD', 'LINK-USD'
+    ]
+    
+    # Create columns for popular crypto buttons in sidebar
+    crypto_cols = st.sidebar.columns(3)
+    for i, crypto in enumerate(popular_crypto):
+        with crypto_cols[i % 3]:
+            # Display shorter name on button (remove -USD suffix)
+            crypto_display = crypto.replace('-USD', '')
+            if st.button(crypto_display, key=f"sidebar_popular_crypto_{crypto}", use_container_width=True):
+                # Add crypto to input if not already there
+                current_input = st.session_state.ticker_input.strip()
+                if current_input:
+                    # Check if crypto is already in the input
+                    current_tickers = [t.strip().upper() for t in current_input.split(',')]
+                    if crypto not in current_tickers:
+                        st.session_state.ticker_input = current_input + f", {crypto}"
+                else:
+                    st.session_state.ticker_input = crypto
+                st.rerun()
+    
     # Database info (read-only)
     available_tickers = st.session_state.db.get_available_tickers()
     if available_tickers:
@@ -129,8 +196,6 @@ def create_sidebar():
 
 def create_timeframe_buttons():
     """Create timeframe selection buttons."""
-    st.subheader("📅 Select Time Period")
-    
     col1, col2, col3, col4, col5, col6, col7 = st.columns(7)
     
     timeframes = {
@@ -251,6 +316,9 @@ def create_price_chart(stock_data_dict):
     
     st.subheader("📊 Stock Performance Comparison")
     
+    # Add timeframe buttons right below the title
+    timeframe_config = create_timeframe_buttons()
+    
     # Use the selected timeframe from the main timeframe buttons
     if 'selected_timeframe' not in st.session_state:
         st.session_state.selected_timeframe = '1Y'
@@ -280,35 +348,13 @@ def create_price_chart(stock_data_dict):
     # Create percentage change data for comparison
     percentage_data = st.session_state.data_fetcher.normalize_prices(filtered_stock_data)
     
-    # Debug: Show what data we have
-    with st.expander("🔍 Debug: Chart Data Info", expanded=False):
-        st.write("**Filtered Stock Data:**")
-        for ticker, data in filtered_stock_data.items():
-            st.write(f"- {ticker}: {len(data)} rows, dates from {data.index.min()} to {data.index.max()}")
-        
-        st.write("**Percentage Data:**")
-        st.write(f"- Shape: {percentage_data.shape}")
-        st.write(f"- Columns: {list(percentage_data.columns)}")
-        if not percentage_data.empty:
-            st.write("- Sample data:")
-            st.dataframe(percentage_data.head())
+
     
     if percentage_data.empty:
         st.warning("No data available for charting in the selected timeframe")
         return
     
-    # Show warning if timeframe exceeds available data
-    if show_data_limit_warning:
-        timeframe_labels = {
-            "1M": "1 Month",
-            "3M": "3 Months", 
-            "6M": "6 Months",
-            "1Y": "1 Year",
-            "2Y": "2 Years",
-            "3Y": "3 Years",
-            "5Y": "5 Years"
-        }
-        st.info(f"ℹ️ Showing all available data (less than {timeframe_labels[st.session_state.selected_timeframe]} available)")
+
     
     # Create plotly figure
     fig = go.Figure()
@@ -433,14 +479,6 @@ def create_volume_chart(stock_data_dict):
     if selected_ticker and selected_ticker in filtered_stock_data:
         data = filtered_stock_data[selected_ticker]
         
-        # Debug volume data
-        st.write(f"**Volume Debug for {selected_ticker}:**")
-        st.write(f"- Data shape: {data.shape}")
-        st.write(f"- Columns: {list(data.columns)}")
-        st.write(f"- Has Volume column: {'Volume' in data.columns}")
-        if 'Volume' in data.columns:
-            st.write(f"- Volume range: {data['Volume'].min()} to {data['Volume'].max()}")
-        
         fig = go.Figure()
         
         fig.add_trace(go.Bar(
@@ -531,8 +569,17 @@ def main():
             # Store current tickers for timeframe changes
             st.session_state.current_tickers = tickers
             
-            # Get timeframe configuration
-            timeframe_config = create_timeframe_buttons()
+            # Get timeframe configuration from session state
+            timeframes = {
+                '1M': {'label': '1 Month', 'days': 30},
+                '3M': {'label': '3 Months', 'days': 90},
+                '6M': {'label': '6 Months', 'days': 180},
+                '1Y': {'label': '1 Year', 'days': 365},
+                '2Y': {'label': '2 Years', 'days': 730},
+                '3Y': {'label': '3 Years', 'days': 1095},
+                '5Y': {'label': '5 Years', 'days': 1825}
+            }
+            timeframe_config = timeframes[st.session_state.selected_timeframe]
             
             # Create progress tracking
             progress_callback, progress_bar, status_text = create_progress_callback()
@@ -580,8 +627,17 @@ def main():
     
     # Handle timeframe changes for existing data
     elif st.session_state.current_tickers and not fetch_button:
-        # Show timeframe buttons
-        timeframe_config = create_timeframe_buttons()
+        # Get timeframe configuration from session state
+        timeframes = {
+            '1M': {'label': '1 Month', 'days': 30},
+            '3M': {'label': '3 Months', 'days': 90},
+            '6M': {'label': '6 Months', 'days': 180},
+            '1Y': {'label': '1 Year', 'days': 365},
+            '2Y': {'label': '2 Years', 'days': 730},
+            '3Y': {'label': '3 Years', 'days': 1095},
+            '5Y': {'label': '5 Years', 'days': 1825}
+        }
+        timeframe_config = timeframes[st.session_state.selected_timeframe]
         
         # If timeframe changed, reload data
         if st.session_state.current_tickers:
@@ -625,11 +681,7 @@ def main():
     
     # Display data if available
     if st.session_state.stock_data:
-        # Show timeframe buttons if we have data but no tickers input
-        if not st.session_state.current_tickers:
-            create_timeframe_buttons()
-        
-        # Main price chart (full width for better visibility)
+        # Main price chart (full width for better visibility) - timeframe buttons are now integrated
         create_price_chart(st.session_state.stock_data)
         
         # Performance metrics table with stock information (full width between charts)
