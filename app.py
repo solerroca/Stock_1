@@ -157,7 +157,8 @@ def create_sidebar():
     )
     st.session_state.ticker_input = tickers_input
     
-    tickers = [ticker.strip().upper() for ticker in tickers_input.split(',') if ticker.strip()][:10]
+    tickers = [t.strip().upper() for t in tickers_input.split(',') if t.strip()]
+    tickers = tickers[:10] # Limit to 10 tickers
     
     fetch_button = st.sidebar.button("📊 Fetch Stock Data", type="primary", use_container_width=True)
     

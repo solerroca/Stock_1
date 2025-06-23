@@ -174,9 +174,8 @@ class StockDataFetcher:
     
     def fetch_stocks_with_timeframe(self, tickers, timeframe_config, db, progress_callback=None):
         """
-        Fetch stock data with hybrid storage strategy.
-        - Daily data stored for ≤1Y periods
-        - Weekly data stored for 2Y+ periods
+        Fetch stock data from the API and store it in the database.
+        The decision to use the cache should be made by the caller.
         
         Args:
             tickers (list): List of stock ticker symbols
@@ -208,42 +207,8 @@ class StockDataFetcher:
             
             if progress_callback:
                 progress_callback(i, len(tickers), f"Processing {ticker}...")
-            
-            # Check database first for the appropriate frequency
-            cached_data = db.get_stock_data(
-                [ticker], 
-                start_date.strftime('%Y-%m-%d'), 
-                end_date.strftime('%Y-%m-%d'),
-                frequency=frequency
-            )
-            
-            if not cached_data.empty:
-                # Convert cached data to the format expected by the app
-                ticker_data = cached_data[cached_data['ticker'] == ticker].copy()
-                if not ticker_data.empty:
-                    try:
-                        # Set date as index and select price columns
-                        ticker_data = ticker_data.set_index('date')
-                        ticker_data = ticker_data[['open', 'high', 'low', 'close', 'adj_close', 'volume']]
-                        ticker_data.columns = ['Open', 'High', 'Low', 'Close', 'Adj Close', 'Volume']
-                        
-                        # Ensure timezone-naive DatetimeIndex for consistency
-                        if not ticker_data.empty:
-                            ticker_data.index = self._normalize_timezone(ticker_data.index)
-                            # Ensure it's a DatetimeIndex after normalization
-                            if not isinstance(ticker_data.index, pd.DatetimeIndex):
-                                ticker_data.index = pd.DatetimeIndex(ticker_data.index)
-                        
-                        if not ticker_data.empty:
-                            stock_data[ticker] = ticker_data
-                            successful_tickers.append(ticker)
-                            cache_info[ticker] = "cached"
-                            continue
-                    except Exception as e:
-                        # Continue to API fetch if cached data processing fails
-                        pass
-            
-            # Fetch from API if not in cache or insufficient data
+
+            # This function now ONLY fetches from the API. Caching is handled in app.py.
             if progress_callback:
                 progress_callback(i, len(tickers), f"Fetching {ticker} from API...")
             
@@ -258,25 +223,15 @@ class StockDataFetcher:
             
             if api_data is not None and not api_data.empty:
                 try:
-                    # Store the data directly in the database with appropriate frequency
+                    # Store the fetched data in the database
                     db.insert_stock_data(ticker, api_data, frequency=frequency)
-                    
-                    # Normalize timezone for consistency before using
-                    api_data_normalized = api_data.copy()
-                    api_data_normalized.index = self._normalize_timezone(api_data_normalized.index)
-                    
-                    # Use the fetched data directly (no resampling needed)
-                    stock_data[ticker] = api_data_normalized
+                    stock_data[ticker] = api_data
                     successful_tickers.append(ticker)
                     cache_info[ticker] = "fetched"
                     
                 except Exception as e:
                     # If storage fails, still use the data but mark as failed cache
-                    # Normalize timezone for consistency
-                    api_data_normalized = api_data.copy()
-                    api_data_normalized.index = self._normalize_timezone(api_data_normalized.index)
-                    
-                    stock_data[ticker] = api_data_normalized
+                    stock_data[ticker] = api_data
                     successful_tickers.append(ticker)
                     cache_info[ticker] = "fetched_no_cache"
             else:
@@ -440,8 +395,10 @@ class StockDataFetcher:
             
         percentage_data = pd.concat(all_series, axis=1)
         
-        # Forward-fill handles missing values from non-trading days
-        percentage_data = percentage_data.ffill()
+        # The ffill call below created the "blocky" chart style.
+        # By removing it, Plotly will correctly draw lines between
+        # real data points (e.g., Friday to Monday) instead of filling weekends.
+        # percentage_data = percentage_data.ffill()
         
         # A single dropna at the end cleans up any remaining empty rows
         percentage_data = percentage_data.dropna(how='all')
