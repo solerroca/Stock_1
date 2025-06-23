@@ -152,7 +152,6 @@ def create_sidebar():
         "Stock Symbols (comma-separated):",
         value=st.session_state.ticker_input,
         placeholder="AAPL, GOOGL, MSFT",
-        height=60,
         key="ticker_text_area"
     )
     st.session_state.ticker_input = tickers_input
