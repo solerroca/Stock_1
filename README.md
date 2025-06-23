@@ -1,40 +1,57 @@
-# Stock Portfolio Tracker
+# Stock Performance Tool
 
-A Streamlit web application for tracking and visualizing stock performance.
+An advanced and efficient Streamlit web application for real-time analysis and visualization of stocks, ETFs, and cryptocurrencies.
 
-## Features
-- Enter up to 10 stock tickers
-- Fetch historical stock data from Yahoo Finance
-- Store data in SQLite database
-- Interactive charts showing stock performance
-- Compare multiple stocks over time
+## Key Features
+
+-   **Multi-Asset Analysis**: Track and compare up to 10 assets simultaneously, including stocks, ETFs, and cryptocurrencies.
+-   **Interactive Performance Chart**: Visualize relative performance with a percentage-based chart where all assets start at 0% for easy comparison.
+-   **Comprehensive Metrics**: View a detailed table of key performance indicators, including total return, volatility, Sharpe ratio, and max drawdown.
+-   **Optimized Caching Strategy**: The application uses a smart caching layer that significantly minimizes API calls. Data is fetched from the local SQLite database whenever possible, making subsequent loads and analyses instantaneous.
+-   **Hybrid Data Storage**: Employs an intelligent storage system that saves **daily** data for short-term views (≤ 1 year) and **weekly** data for long-term views (≥ 2 years), ensuring both high resolution and efficient storage.
+-   **Intuitive UI**: A clean user interface with quick-add buttons for popular stocks, ETFs, and crypto makes ticker selection fast and easy.
+-   **In-App Guidance**: A "How to Use" section provides clear instructions for all application features.
+
+## Tech Stack
+
+-   **Frontend**: Streamlit
+-   **Data Source**: `yfinance` (Yahoo Finance API)
+-   **Database/Caching**: SQLite
+-   **Charting**: Plotly
+-   **Data Manipulation**: pandas
 
 ## Project Structure
+
 ```
 Proj_2_Stock_1/
-├── app.py                 # Main Streamlit application
-├── database.py           # Database operations
-├── stock_data.py         # Stock data fetching and processing
-├── requirements.txt      # Python dependencies
-├── README.md            # This file
-└── data/                # Directory for SQLite database
-    └── stocks.db        # SQLite database file (created automatically)
+├── app.py                 # Main Streamlit application & UI logic
+├── stock_data.py          # Data fetching, processing, and normalization
+├── database.py            # SQLite database operations and caching logic
+├── requirements.txt       # Python dependencies
+├── README.md              # This file
+└── data/
+    └── stocks.db          # SQLite database file (created automatically)
 ```
 
-## Setup Instructions
+## Local Setup
 
 ### 1. Install Dependencies
+
+Ensure you have Python 3.8+ installed. Then, install the required packages from the root directory:
+
 ```bash
 pip install -r requirements.txt
 ```
 
 ### 2. Run the Application
+
 ```bash
 streamlit run app.py
 ```
 
 ### 3. Access the Application
-Open your browser and go to `http://localhost:8501`
+
+Open your web browser and navigate to the local URL provided by Streamlit (usually `http://localhost:8501`).
 
 ## How to Use
 1. Enter stock tickers (e.g., AAPL, GOOGL, MSFT)
