@@ -35,23 +35,45 @@ Proj_2_Stock_1/
 
 ## Local Setup
 
-### 1. Install Dependencies
+### 1. Create and Activate Virtual Environment
 
-Ensure you have Python 3.8+ installed. Then, install the required packages from the root directory:
+It's recommended to use a virtual environment to keep dependencies isolated:
+
+```bash
+# Create virtual environment
+python3 -m venv venv
+
+# Activate virtual environment
+# On macOS/Linux:
+source venv/bin/activate
+
+# On Windows:
+# venv\Scripts\activate
+```
+
+### 2. Install Dependencies
+
+Ensure you have Python 3.8+ installed. Then, install the required packages:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 2. Run the Application
+### 3. Run the Application
 
 ```bash
 streamlit run app.py
 ```
 
-### 3. Access the Application
+### 4. Access the Application
 
 Open your web browser and navigate to the local URL provided by Streamlit (usually `http://localhost:8501`).
+
+### 5. Deactivate Virtual Environment (when done)
+
+```bash
+deactivate
+```
 
 ## How to Use
 1. Enter stock tickers (e.g., AAPL, GOOGL, MSFT)
